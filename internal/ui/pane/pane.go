@@ -183,6 +183,9 @@ func (m Model) Marked() []vfs.Entry {
 	return out
 }
 
+// ClearMarks unmarks everything, e.g. after the marked files were queued.
+func (m *Model) ClearMarks() { clear(m.marked) }
+
 // Navigate loads path in the background. When it arrives, the cursor is placed
 // on selectName if present (or kept in place when refreshing the same path).
 func (m *Model) Navigate(path, selectName string) tea.Cmd {

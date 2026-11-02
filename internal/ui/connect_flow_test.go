@@ -177,3 +177,103 @@ func TestCancelPasswordPromptReturnsToPicker(t *testing.T) {
 		t.Error("a user cancel should not be shown as an error")
 	}
 }
+
+// connected returns a harness already connected to a fresh test server, with
+// focus on the local pane.
+func connected(t *testing.T, localFiles map[string]string) (*harness, *sshtest.Server, string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("the test SFTP server exposes Windows paths")
+	}
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("SSH_AUTH_SOCK", "")
+	srv := sshtest.New(t, sshtest.Options{Password: "pw"})
+	local := t.TempDir()
+	for name, body := range localFiles {
+		if err := os.WriteFile(filepath.Join(local, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m, err := New(Options{
+		Config: config.Default(), StartDir: local, SSHConfig: sshx.EmptySSHConfig(),
+		Destination: &sshx.Destination{User: srv.User, Host: srv.Host, Port: srv.Port},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newHarness(t, m)
+	h.until("host key prompt", func(m Model) bool { return m.connect.HasDialog() })
+	h.typeText("y")
+	h.until("password prompt", func(m Model) bool {
+		return m.connect.HasDialog() && strings.Contains(ansi.Strip(m.View().Content), "Password")
+	})
+	h.typeText("pw")
+	h.key(tea.KeyPressMsg{Code: tea.KeyEnter})
+	h.until("connected", func(m Model) bool { return m.conn != nil && m.remote.Path() != "" })
+	h.key(tea.KeyPressMsg{Code: tea.KeyTab}) // right → queue is empty, so local
+	h.until("local focus", func(m Model) bool { return m.focus == leftSide })
+	return h, srv, local
+}
+
+func TestUploadWithConflictEndToEnd(t *testing.T) {
+	h, srv, _ := connected(t, map[string]string{"hello.txt": "hello world"})
+
+	h.typeText("j") // past ".." to hello.txt
+	h.typeText("c")
+	remoteFile := filepath.Join(srv.Root, "hello.txt")
+	h.until("upload finished", func(m Model) bool {
+		b, err := os.ReadFile(remoteFile)
+		return err == nil && string(b) == "hello world" && strings.Contains(ansi.Strip(m.View().Content), "✓ hello.txt")
+	})
+	h.until("remote pane refreshed", func(m Model) bool {
+		return strings.Contains(ansi.Strip(m.remote.View()), "hello.txt")
+	})
+
+	// Upload again: the file exists now, so we get asked.
+	h.typeText("c")
+	h.until("conflict dialog", func(m Model) bool {
+		return m.queue.HasDialog() && strings.Contains(ansi.Strip(m.View().Content), "Already exists")
+	})
+	h.typeText("q") // not a valid answer: must not quit or dismiss
+	if !h.m.queue.HasDialog() {
+		t.Fatal("dialog dismissed by an unrelated key")
+	}
+	h.typeText("k")
+	h.until("kept both", func(m Model) bool {
+		_, err := os.Stat(filepath.Join(srv.Root, "hello (1).txt"))
+		return err == nil && !m.engine.Busy()
+	})
+
+	// The queue panel is reachable with tab and can be cleared.
+	h.key(tea.KeyPressMsg{Code: tea.KeyTab})
+	h.key(tea.KeyPressMsg{Code: tea.KeyTab})
+	if h.m.focus != queueSide {
+		t.Fatalf("focus = %v, want queue", h.m.focus)
+	}
+	h.typeText("c") // clear finished
+	if h.m.queue.HasItems() || h.m.focus == queueSide {
+		t.Error("clearing finished items should empty the queue and move focus away")
+	}
+}
+
+func TestQuitWhileBusyAsksFirst(t *testing.T) {
+	h, _, local := connected(t, nil)
+	if err := os.WriteFile(filepath.Join(local, "big.bin"), make([]byte, 4<<20), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h.m.applyTransferSettings(config.Transfers{Concurrency: 1, UploadLimit: 64 << 10})
+	h.key(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl}) // refresh to see big.bin
+	h.until("big.bin listed", func(m Model) bool { return strings.Contains(ansi.Strip(m.local.View()), "big.bin") })
+	h.typeText("j")
+	h.typeText("c")
+	h.until("transfer running", func(m Model) bool { return m.engine != nil && m.engine.Busy() })
+
+	h.typeText("q")
+	if h.m.confirm == nil {
+		t.Fatal("quit with an active transfer should ask first")
+	}
+	h.typeText("n")
+	if h.m.confirm != nil || h.m.engine == nil {
+		t.Fatal("answering no should keep everything running")
+	}
+}

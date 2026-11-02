@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -297,5 +298,68 @@ func TestCancelAfterWrongPassword(t *testing.T) {
 	}
 	if len(p.asked) != 2 {
 		t.Errorf("asked %d times after cancelling, want 2 (wrong, then cancel)", len(p.asked))
+	}
+}
+
+func TestSilentServerTimesOut(t *testing.T) {
+	home := isolate(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		c, err := ln.Accept()
+		if err == nil {
+			defer c.Close()
+			time.Sleep(5 * time.Second) // accept, then say nothing
+		}
+	}()
+	old := handshakeTimeout
+	handshakeTimeout = 300 * time.Millisecond
+	defer func() { handshakeTimeout = old }()
+
+	addr := ln.Addr().(*net.TCPAddr)
+	tgt := Target{
+		Alias: "mute", Host: "127.0.0.1", Port: addr.Port, User: "x", IdentitiesOnly: true,
+		KnownHostsFiles: []string{filepath.Join(home, ".ssh", "known_hosts")},
+	}
+	start := time.Now()
+	_, err = connect(t, tgt, &scriptedPrompter{})
+	if err == nil || !strings.Contains(err.Error(), "did not respond") {
+		t.Fatalf("err = %v, want a timeout", err)
+	}
+	if time.Since(start) > 3*time.Second {
+		t.Errorf("took %v to time out", time.Since(start))
+	}
+}
+
+// slowPrompter answers after a delay, like a person typing.
+type slowPrompter struct {
+	scriptedPrompter
+	delay time.Duration
+}
+
+func (p *slowPrompter) Ask(ctx context.Context, q Question) (string, error) {
+	time.Sleep(p.delay)
+	return p.scriptedPrompter.Ask(ctx, q)
+}
+
+func (p *slowPrompter) ConfirmHostKey(ctx context.Context, info HostKeyInfo) (bool, error) {
+	time.Sleep(p.delay)
+	return p.scriptedPrompter.ConfirmHostKey(ctx, info)
+}
+
+// The handshake deadline must not fire while the user is answering prompts.
+func TestSlowUserDoesNotTimeOut(t *testing.T) {
+	home := isolate(t)
+	srv := sshtest.New(t, sshtest.Options{Password: "pw"})
+	old := handshakeTimeout
+	handshakeTimeout = 300 * time.Millisecond
+	defer func() { handshakeTimeout = old }()
+
+	p := &slowPrompter{scriptedPrompter: scriptedPrompter{answers: []string{"pw"}, trust: true}, delay: 700 * time.Millisecond}
+	if _, err := connect(t, targetFor(t, srv, home), p); err != nil {
+		t.Fatalf("slow but valid login failed: %v", err)
 	}
 }

@@ -48,6 +48,10 @@ type FS interface {
 	// Remove deletes a file or an empty directory.
 	Remove(path string) error
 	Rename(oldPath, newPath string) error
+	// Chtimes sets the modification (and access) time.
+	Chtimes(path string, mtime time.Time) error
+	// Chmod sets permission bits.
+	Chmod(path string, mode fs.FileMode) error
 
 	Join(elem ...string) string
 	Dir(path string) string

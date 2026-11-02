@@ -7,20 +7,28 @@ import (
 // keyMap holds the global key bindings. Screen-specific bindings live with
 // their screens.
 type keyMap struct {
-	SwitchPane key.Binding
-	Disconnect key.Binding
-	Theme      key.Binding
-	Help       key.Binding
-	Quit       key.Binding
+	SwitchPane   key.Binding
+	Copy         key.Binding
+	MoreParallel key.Binding
+	LessParallel key.Binding
+	Settings     key.Binding
+	Disconnect   key.Binding
+	Theme        key.Binding
+	Help         key.Binding
+	Quit         key.Binding
 }
 
 func defaultKeys() keyMap {
 	return keyMap{
-		SwitchPane: key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "switch side")),
-		Disconnect: key.NewBinding(key.WithKeys("ctrl+d"), key.WithHelp("ctrl+d", "disconnect")),
-		Theme:      key.NewBinding(key.WithKeys("T"), key.WithHelp("T", "next theme")),
-		Help:       key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "more keys")),
-		Quit:       key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
+		SwitchPane:   key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "switch side")),
+		Copy:         key.NewBinding(key.WithKeys("c", "f5"), key.WithHelp("c", "copy to other side")),
+		MoreParallel: key.NewBinding(key.WithKeys("+", "="), key.WithHelp("+/-", "parallel transfers")),
+		LessParallel: key.NewBinding(key.WithKeys("-"), key.WithHelp("-", "fewer transfers")),
+		Settings:     key.NewBinding(key.WithKeys("L"), key.WithHelp("L", "speed limits")),
+		Disconnect:   key.NewBinding(key.WithKeys("ctrl+d"), key.WithHelp("ctrl+d", "disconnect")),
+		Theme:        key.NewBinding(key.WithKeys("T"), key.WithHelp("T", "next theme")),
+		Help:         key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "more keys")),
+		Quit:         key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
 	}
 }
 
@@ -43,8 +51,24 @@ func (h helpKeys) FullHelp() [][]key.Binding {
 
 func (m Model) helpKeys() helpKeys {
 	g := m.keys
-	if m.connect.HasDialog() {
+	switch {
+	case m.connect.HasDialog():
 		return helpKeys{short: m.connect.HelpKeys()}
+	case m.queue.HasDialog():
+		return helpKeys{short: m.queue.HelpKeys()}
+	case m.confirm != nil:
+		return helpKeys{short: confirmHelp}
+	case m.settings != nil:
+		return helpKeys{short: []key.Binding{
+			key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "next/apply")),
+			key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel")),
+		}}
+	case m.focus == queueSide:
+		q := m.queue.KeyMap()
+		return helpKeys{
+			short: append([]key.Binding{g.SwitchPane}, append(m.queue.HelpKeys(), g.MoreParallel, g.Settings, g.Help, g.Quit)...),
+			full:  [][]key.Binding{{q.Up, q.Down}, m.queue.HelpKeys(), {g.MoreParallel, g.LessParallel, g.Settings}, {g.SwitchPane, g.Help, g.Quit}},
+		}
 	}
 
 	paneFocused := m.focus == leftSide || m.conn != nil
@@ -70,12 +94,17 @@ func (m Model) helpKeys() helpKeys {
 	if m.conn != nil {
 		conn = append(conn, g.Disconnect)
 	}
+	short := []key.Binding{g.SwitchPane, p.Open, p.Mark}
+	if m.conn != nil {
+		short = append(short, g.Copy)
+	}
 	return helpKeys{
-		short: []key.Binding{g.SwitchPane, p.Open, p.Parent, p.Mark, p.Filter, g.Theme, g.Help, g.Quit},
+		short: append(short, p.Filter, g.Theme, g.Help, g.Quit),
 		full: [][]key.Binding{
 			{p.Up, p.Down, p.PageUp, p.PageDown, p.Top, p.Bottom},
 			{p.Open, p.Parent, p.Home, p.Refresh},
 			{p.Mark, p.MarkAll, p.Filter, p.ClearFilter},
+			{g.Copy, g.MoreParallel, g.Settings},
 			{p.Hidden, p.Sort, g.Theme},
 			append(conn, g.Help, g.Quit),
 		},

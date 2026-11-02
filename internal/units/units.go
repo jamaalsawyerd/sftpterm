@@ -11,6 +11,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -128,3 +129,20 @@ func (r *Rate) UnmarshalText(b []byte) error {
 	*r = v
 	return nil
 }
+
+// FormatDuration renders d compactly: "45s", "3m05s", "2h07m".
+func FormatDuration(d time.Duration) string {
+	switch s := int(d.Round(time.Second).Seconds()); {
+	case d < time.Second:
+		return strconv.FormatInt(d.Milliseconds(), 10) + "ms"
+	case s < 60:
+		return strconv.Itoa(s) + "s"
+	case s < 3600:
+		return fmt.Sprintf("%dm%02ds", s/60, s%60)
+	default:
+		return fmt.Sprintf("%dh%02dm", s/3600, (s%3600)/60)
+	}
+}
+
+// FormatRate renders bytes/second as e.g. "12.3 MiB/s".
+func FormatRate(bps float64) string { return FormatBytes(int64(bps)) + "/s" }

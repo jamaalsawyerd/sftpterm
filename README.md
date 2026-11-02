@@ -30,6 +30,23 @@ Press `tab` to switch between the local and remote sides, `n` on the connect
 screen to type in a host that isn't in your ssh config, `ctrl+d` to
 disconnect, and `?` for every key.
 
+### Transferring files
+
+Mark files with `space` (or `ctrl+a` for everything), then press `c` to copy
+them to the directory open on the other side. Without marks, `c` copies the
+item under the cursor. Folders are copied recursively.
+
+- Progress, speed, and time remaining show in the **Transfers** panel; `tab`
+  into it to cancel (`x`), retry (`r`), or clear finished items (`c`).
+- If a file already exists you can overwrite, skip, or keep both
+  (`report (1).pdf`); use the capital letter to apply that to the rest of the
+  batch.
+- Files are written to a hidden `.name.sftpterm-part` file and renamed into
+  place when complete, so an interrupted transfer never leaves a half-written
+  file under the real name. Modification times and permissions are kept.
+- `+`/`-` change how many files transfer at once; `L` sets upload and
+  download speed limits. Limits are shared by all transfers in that direction.
+
 ### Authentication and host keys
 
 sftpterm tries, in order: keys from your ssh-agent, your key files

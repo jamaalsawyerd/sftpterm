@@ -96,7 +96,7 @@ func (m *Model) SetStyles(s theme.Styles) {
 	m.styles = s
 	m.spinner.Style = lipgloss.NewStyle().Foreground(s.Palette.Accent)
 	if m.form != nil {
-		m.form.WithTheme(formTheme(s))
+		m.form.WithTheme(s.FormTheme())
 	}
 }
 
@@ -282,7 +282,7 @@ func (m *Model) openForm() tea.Cmd {
 			}),
 		huh.NewInput().Title("Directory").Placeholder("home directory").Value(&m.vals.path),
 	)).
-		WithTheme(formTheme(m.styles)).
+		WithTheme(m.styles.FormTheme()).
 		WithKeyMap(keys).
 		WithWidth(m.formWidth()).
 		WithShowHelp(true)
@@ -434,28 +434,3 @@ func (m Model) pickView(iw int) string {
 
 // Close abandons any attempt in progress.
 func (m *Model) Close() { m.abort() }
-
-func formTheme(s theme.Styles) huh.Theme {
-	return huh.ThemeFunc(func(bool) *huh.Styles {
-		p := s.Palette
-		t := huh.ThemeBase(true)
-		t.Focused.Base = t.Focused.Base.BorderForeground(p.Primary)
-		t.Focused.Title = lipgloss.NewStyle().Foreground(p.Primary).Bold(true)
-		t.Focused.Description = lipgloss.NewStyle().Foreground(p.Muted)
-		t.Focused.ErrorIndicator = lipgloss.NewStyle().Foreground(p.Error).SetString(" *")
-		t.Focused.ErrorMessage = lipgloss.NewStyle().Foreground(p.Error)
-		t.Focused.TextInput.Cursor = lipgloss.NewStyle().Foreground(p.Accent)
-		t.Focused.TextInput.Placeholder = lipgloss.NewStyle().Foreground(p.Subtle)
-		t.Focused.TextInput.Prompt = lipgloss.NewStyle().Foreground(p.Secondary)
-		t.Focused.TextInput.Text = lipgloss.NewStyle().Foreground(p.Text)
-		t.Focused.FocusedButton = lipgloss.NewStyle().Foreground(p.Highlight).Background(p.Primary).Padding(0, 2)
-		t.Focused.BlurredButton = lipgloss.NewStyle().Foreground(p.Muted).Background(p.Highlight).Padding(0, 2)
-		t.Blurred = t.Focused
-		t.Blurred.Base = t.Focused.Base.BorderStyle(lipgloss.HiddenBorder())
-		t.Blurred.Title = lipgloss.NewStyle().Foreground(p.Muted)
-		t.Blurred.TextInput.Prompt = lipgloss.NewStyle().Foreground(p.Subtle)
-		t.Group.Title = t.Focused.Title
-		t.Help = s.Help
-		return t
-	})
-}

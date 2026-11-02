@@ -24,6 +24,10 @@ const (
 	keepAliveInterval = 30 * time.Second
 )
 
+// handshakeTimeout bounds how long the server may take to respond during the
+// handshake. It is paused while the user answers a prompt. (A var for tests.)
+var handshakeTimeout = 30 * time.Second
+
 // Options tune Connect.
 type Options struct {
 	// Prompter answers passphrase, password, and host key questions. Required.
@@ -100,6 +104,14 @@ func Connect(ctx context.Context, t Target, opts Options) (*Conn, error) {
 	// The handshake has no context support; closing the socket unblocks it.
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stop()
+	prompter.deadline = func(on bool) {
+		if on {
+			_ = conn.SetDeadline(time.Now().Add(handshakeTimeout))
+		} else {
+			_ = conn.SetDeadline(time.Time{})
+		}
+	}
+	prompter.deadline(true)
 
 	progress("authenticating as " + t.User)
 	c, chans, reqs, err := ssh.NewClientConn(conn, t.Addr(), cfg)
@@ -110,9 +122,12 @@ func Connect(ctx context.Context, t Target, opts Options) (*Conn, error) {
 			return nil, ErrCancelled
 		case parent.Err() != nil:
 			return nil, parent.Err()
+		case errors.Is(err, os.ErrDeadlineExceeded):
+			return nil, fmt.Errorf("%s did not respond within %s (is it an SSH server?)", t.Addr(), handshakeTimeout)
 		}
 		return nil, describeHandshakeError(err)
 	}
+	prompter.deadline(false)
 	client := ssh.NewClient(c, chans, reqs)
 
 	progress("starting sftp")
@@ -169,14 +184,29 @@ func describeHandshakeError(err error) error {
 }
 
 // abortingPrompter cancels the connection attempt when the user dismisses a
-// prompt.
+// prompt, and pauses the handshake deadline while the user is thinking.
 type abortingPrompter struct {
 	Prompter
 	abort     context.CancelFunc
 	cancelled atomic.Bool
+	deadline  func(on bool) // set once the socket exists
+}
+
+func (p *abortingPrompter) pause() func() {
+	if p.deadline == nil {
+		return func() {}
+	}
+	p.deadline(false)
+	return func() { p.deadline(true) }
+}
+
+func (p *abortingPrompter) ConfirmHostKey(ctx context.Context, info HostKeyInfo) (bool, error) {
+	defer p.pause()()
+	return p.Prompter.ConfirmHostKey(ctx, info)
 }
 
 func (p *abortingPrompter) Ask(ctx context.Context, q Question) (string, error) {
+	defer p.pause()()
 	a, err := p.Prompter.Ask(ctx, q)
 	if errors.Is(err, ErrCancelled) {
 		p.cancelled.Store(true)

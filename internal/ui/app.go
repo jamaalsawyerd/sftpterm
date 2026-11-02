@@ -14,15 +14,19 @@ import (
 	"charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/huh/v2"
 	"charm.land/lipgloss/v2"
 	"charm.land/log/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/jamaalsawyerd/sftpterm/internal/config"
 	"github.com/jamaalsawyerd/sftpterm/internal/sshx"
+	"github.com/jamaalsawyerd/sftpterm/internal/transfer"
 	"github.com/jamaalsawyerd/sftpterm/internal/ui/connect"
 	"github.com/jamaalsawyerd/sftpterm/internal/ui/pane"
+	"github.com/jamaalsawyerd/sftpterm/internal/ui/queue"
 	"github.com/jamaalsawyerd/sftpterm/internal/ui/theme"
+	"github.com/jamaalsawyerd/sftpterm/internal/units"
 	"github.com/jamaalsawyerd/sftpterm/internal/vfs"
 )
 
@@ -77,6 +81,7 @@ type side int
 const (
 	leftSide side = iota
 	rightSide
+	queueSide
 )
 
 // Model is the root Bubble Tea model.
@@ -90,7 +95,12 @@ type Model struct {
 	connect connect.Model
 	remote  pane.Model
 	conn    *sshx.Conn // nil when disconnected
+	engine  *transfer.Engine
+	queue   queue.Model
 	focus   side
+
+	confirm  *confirmDialog
+	settings *settingsForm
 
 	// initCmd holds the startup work. It is created in New because Init has
 	// a value receiver: state changed there (like a pane's load sequence
@@ -161,13 +171,32 @@ func (m *Model) setPalette(p theme.Palette) {
 	m.local.SetStyles(m.styles)
 	m.remote.SetStyles(m.styles)
 	m.connect.SetStyles(m.styles)
+	m.queue.SetStyles(m.styles)
 }
 
 func (m *Model) setFocus(s side) {
+	if s == queueSide && !m.queue.HasItems() {
+		s = leftSide
+	}
 	m.focus = s
 	m.local.SetFocused(s == leftSide)
 	m.remote.SetFocused(s == rightSide && m.conn != nil)
 	m.connect.SetFocused(s == rightSide && m.conn == nil)
+	m.queue.SetFocused(s == queueSide)
+}
+
+// nextFocus cycles local → remote → queue (when it has items).
+func (m Model) nextFocus() side {
+	switch m.focus {
+	case leftSide:
+		return rightSide
+	case rightSide:
+		if m.queue.HasItems() {
+			return queueSide
+		}
+	case queueSide:
+	}
+	return leftSide
 }
 
 // setNotice shows a transient message in the status bar.
@@ -212,22 +241,59 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.dropConnection()
 		return m, m.setNotice(noticeError, "connection to "+label+" lost", errorNoticeTTL)
 
+	case queue.ItemFinishedMsg:
+		return m.onItemFinished(msg.ItemDoneEvent)
+
+	case queue.IdleMsg:
+		ev := msg.IdleEvent
+		if ev.Done+ev.Failed > 1 {
+			text := fmt.Sprintf("✓ all done: %d items, %s in %s", ev.Done, units.FormatBytes(ev.Bytes), units.FormatDuration(ev.Elapsed))
+			kind := noticeInfo
+			if ev.Failed > 0 {
+				text = fmt.Sprintf("finished with %d failed, %d done", ev.Failed, ev.Done)
+				kind = noticeWarn
+			}
+			return m, m.setNotice(kind, text, errorNoticeTTL)
+		}
+		return m, nil
+
+	case settingsSubmittedMsg:
+		if m.settings != nil {
+			m.applyTransferSettings(m.settings.values())
+			m.settings = nil
+			return m, m.setNotice(noticeInfo, "transfer settings updated", noticeTTL)
+		}
+		return m, nil
+
+	case settingsCancelledMsg:
+		m.settings = nil
+		return m, nil
+
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}
 
+	if m.settings != nil {
+		f, cmd := m.settings.form.Update(msg)
+		if form, ok := f.(*huh.Form); ok {
+			m.settings.form = form
+		}
+		mm, bcmd := m.broadcast(msg)
+		return mm, tea.Batch(cmd, bcmd)
+	}
 	return m.broadcast(msg)
 }
 
 // broadcast delivers a non-key message to every child. Each one ignores
 // messages that aren't addressed to it.
 func (m Model) broadcast(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmds [3]tea.Cmd
+	var cmds [4]tea.Cmd
 	m.local, cmds[0] = m.local.Update(msg)
 	if m.conn != nil {
 		m.remote, cmds[1] = m.remote.Update(msg)
 	}
 	m.connect, cmds[2] = m.connect.Update(msg)
+	m.queue, cmds[3] = m.queue.Update(msg)
 	m.layout()
 	return m, tea.Batch(cmds[:]...)
 }
@@ -237,16 +303,37 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.quit()
 	}
 	// Prompts are modal.
-	if m.connect.HasDialog() {
+	switch {
+	case m.connect.HasDialog():
 		var cmd tea.Cmd
 		m.connect, cmd = m.connect.Update(msg)
+		return m, cmd
+	case m.queue.HasDialog():
+		var cmd tea.Cmd
+		m.queue, cmd = m.queue.Update(msg)
+		return m, cmd
+	case m.confirm != nil:
+		d := m.confirm
+		switch msg.String() {
+		case "y", "Y", "enter":
+			m.confirm = nil
+			return d.yes(m)
+		case "n", "N", "esc":
+			m.confirm = nil
+		}
+		return m, nil
+	case m.settings != nil:
+		f, cmd := m.settings.form.Update(msg)
+		if form, ok := f.(*huh.Form); ok {
+			m.settings.form = form
+		}
 		return m, cmd
 	}
 
 	if !m.focusedCapturesKeys() {
 		switch {
 		case key.Matches(msg, m.keys.Quit):
-			return m.quit()
+			return m.confirmIfBusy("Quit sftpterm?", (Model).quit)
 		case key.Matches(msg, m.keys.Help):
 			m.help.ShowAll = !m.help.ShowAll
 			m.layout()
@@ -256,10 +343,24 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			log.Debug("theme changed", "theme", m.cfg.Theme)
 			return m, m.setNotice(noticeInfo, "theme → "+m.cfg.Theme, noticeTTL)
 		case key.Matches(msg, m.keys.SwitchPane):
-			m.setFocus(1 - m.focus)
+			m.setFocus(m.nextFocus())
 			return m, nil
 		case key.Matches(msg, m.keys.Disconnect) && m.conn != nil:
-			return m.disconnect()
+			return m.confirmIfBusy("Disconnect?", (Model).disconnect)
+		case key.Matches(msg, m.keys.Copy) && m.focus != queueSide && (m.focus == leftSide || m.conn != nil):
+			return m.copySelection()
+		case key.Matches(msg, m.keys.MoreParallel), key.Matches(msg, m.keys.LessParallel):
+			t := m.cfg.Transfers
+			if key.Matches(msg, m.keys.MoreParallel) {
+				t.Concurrency = min(t.Concurrency+1, config.MaxConcurrency)
+			} else {
+				t.Concurrency = max(t.Concurrency-1, config.MinConcurrency)
+			}
+			m.applyTransferSettings(t)
+			return m, m.setNotice(noticeInfo, fmt.Sprintf("%d transfers at once", t.Concurrency), noticeTTL)
+		case key.Matches(msg, m.keys.Settings):
+			m.settings = newSettingsForm(m.cfg.Transfers, m.styles)
+			return m, m.settings.form.Init()
 		}
 	}
 
@@ -267,6 +368,11 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case m.focus == leftSide:
 		m.local, cmd = m.local.Update(msg)
+	case m.focus == queueSide:
+		m.queue, cmd = m.queue.Update(msg)
+		if !m.queue.HasItems() {
+			m.setFocus(leftSide)
+		}
 	case m.conn != nil:
 		m.remote, cmd = m.remote.Update(msg)
 	default:
@@ -282,10 +388,93 @@ func (m Model) focusedCapturesKeys() bool {
 	switch {
 	case m.focus == leftSide:
 		return m.local.Filtering()
+	case m.focus == queueSide:
+		return false
 	case m.conn != nil:
 		return m.remote.Filtering()
 	default:
 		return m.connect.CapturesKeys()
+	}
+}
+
+// confirmIfBusy runs action now, or asks first if transfers are running.
+func (m Model) confirmIfBusy(title string, action func(Model) (tea.Model, tea.Cmd)) (tea.Model, tea.Cmd) {
+	if m.engine == nil || !m.engine.Busy() {
+		return action(m)
+	}
+	n := m.queue.Snapshot().Active + m.queue.Snapshot().Queued
+	m.confirm = &confirmDialog{
+		title: title,
+		body:  fmt.Sprintf("%d transfers are still in progress. They will be cancelled and partial files removed.", max(n, 1)),
+		yes:   action,
+	}
+	return m, nil
+}
+
+// copySelection queues the marked entries (or the one under the cursor) from
+// the focused pane into the other pane's directory.
+func (m Model) copySelection() (tea.Model, tea.Cmd) {
+	if m.conn == nil || m.engine == nil {
+		return m, m.setNotice(noticeWarn, "connect to a server first", noticeTTL)
+	}
+	src, dst, dir := &m.local, &m.remote, transfer.Upload
+	if m.focus == rightSide {
+		src, dst, dir = &m.remote, &m.local, transfer.Download
+	}
+	entries := src.Marked()
+	if len(entries) == 0 {
+		if e, ok := src.Selected(); ok {
+			entries = []vfs.Entry{e}
+		}
+	}
+	if len(entries) == 0 || dst.Path() == "" {
+		return m, m.setNotice(noticeWarn, "nothing to copy", noticeTTL)
+	}
+	m.engine.Enqueue(dir, src.Path(), entries, dst.Path())
+	src.ClearMarks()
+	log.Debug("queued", "dir", dir, "count", len(entries), "from", src.Path(), "to", dst.Path())
+
+	what := entries[0].Name
+	if len(entries) > 1 {
+		what = fmt.Sprintf("%d items", len(entries))
+	}
+	kick := m.queue.Kick()
+	m.layout()
+	return m, tea.Batch(kick, m.setNotice(noticeInfo, dir.String()+"ing "+what, noticeTTL))
+}
+
+func (m Model) onItemFinished(ev transfer.ItemDoneEvent) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
+	// Refresh the destination pane if it's showing where the item landed.
+	if ev.Dir == transfer.Upload && m.conn != nil && m.remote.Path() == ev.DstDir {
+		cmds = append(cmds, m.remote.Navigate(ev.DstDir, ""))
+	}
+	if ev.Dir == transfer.Download && m.local.Path() == ev.DstDir {
+		cmds = append(cmds, m.local.Navigate(ev.DstDir, ""))
+	}
+	verb := map[transfer.Direction]string{transfer.Upload: "uploaded", transfer.Download: "downloaded"}[ev.Dir]
+	switch ev.State {
+	case transfer.Done:
+		text := "✓ " + verb + " " + ev.Name + " (" + units.FormatBytes(ev.Bytes) + ")"
+		if ev.Skipped > 0 {
+			text += fmt.Sprintf(", %d skipped", ev.Skipped)
+		}
+		cmds = append(cmds, m.setNotice(noticeInfo, text, noticeTTL))
+	case transfer.Failed:
+		cmds = append(cmds, m.setNotice(noticeError, ev.Name+": "+ev.Err.Error(), errorNoticeTTL))
+	case transfer.Cancelled:
+		cmds = append(cmds, m.setNotice(noticeInfo, "cancelled "+ev.Name, noticeTTL))
+	case transfer.Queued, transfer.Scanning, transfer.Active:
+	}
+	return m, tea.Batch(cmds...)
+}
+
+func (m *Model) applyTransferSettings(t config.Transfers) {
+	m.cfg.Transfers = t
+	if m.engine != nil {
+		m.engine.SetConcurrency(t.Concurrency)
+		m.engine.SetLimit(transfer.Upload, t.UploadLimit)
+		m.engine.SetLimit(transfer.Download, t.DownloadLimit)
 	}
 }
 
@@ -301,6 +490,12 @@ func (m Model) onConnected(conn *sshx.Conn) (tea.Model, tea.Cmd) {
 	}
 	m.conn = conn
 	m.remote = pane.New(fsys, paneOptions(m.cfg, m.styles))
+	t := m.cfg.Transfers
+	m.engine = transfer.New(transfer.Options{
+		Local: m.local.FS(), Remote: fsys, Concurrency: t.Concurrency,
+		UploadLimit: t.UploadLimit, DownloadLimit: t.DownloadLimit,
+	})
+	m.queue = queue.New(m.engine, m.styles)
 
 	home, _ := fsys.Home()
 	start := conn.Target.Path
@@ -316,41 +511,82 @@ func (m Model) onConnected(conn *sshx.Conn) (tea.Model, tea.Cmd) {
 	log.Debug("connected", "target", label, "start", start)
 
 	wait := func() tea.Msg { return disconnectedMsg{conn: conn, err: conn.Wait()} }
-	return m, tea.Batch(load, wait, m.setNotice(noticeInfo, "connected to "+label, noticeTTL))
+	return m, tea.Batch(load, wait, m.queue.Init(), m.setNotice(noticeInfo, "connected to "+label, noticeTTL))
 }
 
 func (m Model) disconnect() (tea.Model, tea.Cmd) {
-	conn := m.conn
+	conn, engine := m.conn, m.engine
 	label := conn.Target.String()
+	m.engine = nil // shut down below, in order
 	m.dropConnection()
-	closeConn := func() tea.Msg { _ = conn.Close(); return nil }
+	closeConn := func() tea.Msg { shutdown(engine, conn); return nil }
 	return m, tea.Batch(closeConn, m.setNotice(noticeInfo, "disconnected from "+label, noticeTTL))
 }
 
+// shutdownGrace is how long cancelled transfers get to remove their partial
+// files before the connection is closed underneath them.
+const shutdownGrace = 3 * time.Second
+
+// shutdown cancels transfers, gives them a moment to clean up, then closes
+// the connection.
+func shutdown(engine *transfer.Engine, conn *sshx.Conn) {
+	if engine != nil {
+		engine.CancelAll()
+		done := make(chan struct{})
+		go func() { engine.Close(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(shutdownGrace):
+			log.Debug("transfers did not stop in time; closing anyway")
+		}
+	}
+	if conn != nil {
+		_ = conn.Close()
+	}
+}
+
 func (m *Model) dropConnection() {
+	if m.engine != nil {
+		go m.engine.Close() // the connection is gone; workers exit as I/O fails
+		m.engine = nil
+	}
 	m.conn = nil
 	m.remote = pane.Model{}
+	m.queue = queue.Model{}
+	m.confirm = nil
+	if m.focus == queueSide {
+		m.focus = rightSide
+	}
 	m.setFocus(m.focus)
 	m.layout()
 }
 
 func (m Model) quit() (tea.Model, tea.Cmd) {
 	m.connect.Close()
-	if m.conn != nil {
-		_ = m.conn.Close()
-		m.conn = nil
-	}
+	shutdown(m.engine, m.conn)
+	m.engine, m.conn = nil, nil
 	return m, tea.Quit
 }
 
 // layout distributes the terminal between header, panes, and footer.
 func (m *Model) layout() {
 	footerHeight := 1 + lipgloss.Height(m.helpView())
-	m.bodyHeight = max(m.height-headerHeight-footerHeight, 0)
+	queueHeight := m.queue.Height()
+	// Keep at least a few rows for the panes on short terminals.
+	if m.height-headerHeight-footerHeight-queueHeight < 6 {
+		queueHeight = 0
+	}
+	m.bodyHeight = max(m.height-headerHeight-footerHeight-queueHeight, 0)
 	lw := m.width / 2
 	m.local.SetSize(lw, m.bodyHeight)
 	m.remote.SetSize(m.width-lw, m.bodyHeight)
 	m.connect.SetSize(m.width-lw, m.bodyHeight)
+	m.queue.SetWidth(m.width)
+}
+
+// queueVisible reports whether layout left room for the queue panel.
+func (m Model) queueVisible() bool {
+	return m.queue.HasItems() && m.height-headerHeight-1-lipgloss.Height(m.helpView())-m.bodyHeight > 0
 }
 
 // View implements tea.Model.
@@ -377,13 +613,33 @@ func (m Model) render() string {
 		right = m.remote.View()
 	}
 	body := lipgloss.JoinHorizontal(lipgloss.Top, m.local.View(), right)
-	screen := lipgloss.JoinVertical(lipgloss.Left, m.headerView(), body, m.statusView(), m.helpView())
+	parts := []string{m.headerView(), body}
+	if m.queueVisible() {
+		parts = append(parts, m.queue.View())
+	}
+	parts = append(parts, m.statusView(), m.helpView())
+	screen := lipgloss.JoinVertical(lipgloss.Left, parts...)
 
-	if d := m.connect.Dialog(m.width); d != "" {
+	if d := m.dialogView(); d != "" {
 		dw, dh := lipgloss.Size(d)
 		screen = theme.Overlay(screen, d, max((m.width-dw)/2, 0), max((m.height-dh)/2, 0))
 	}
 	return screen
+}
+
+// dialogView renders whichever modal is open, if any.
+func (m Model) dialogView() string {
+	switch {
+	case m.connect.HasDialog():
+		return m.connect.Dialog(m.width)
+	case m.queue.HasDialog():
+		return m.queue.Dialog(m.width)
+	case m.confirm != nil:
+		return m.confirm.view(m.styles, m.width)
+	case m.settings != nil:
+		return m.settings.view(m.styles)
+	}
+	return ""
 }
 
 func (m Model) headerView() string {
@@ -457,8 +713,8 @@ func Run(ctx context.Context, opts Options) error {
 		return err
 	}
 	final, err := tea.NewProgram(m, tea.WithContext(ctx)).Run()
-	if fm, ok := final.(Model); ok && fm.conn != nil {
-		_ = fm.conn.Close()
+	if fm, ok := final.(Model); ok {
+		shutdown(fm.engine, fm.conn)
 	}
 	if errors.Is(err, tea.ErrInterrupted) {
 		return nil

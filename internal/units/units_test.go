@@ -1,6 +1,9 @@
 package units
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestFormatBytes(t *testing.T) {
 	tests := []struct {
@@ -95,6 +98,20 @@ func TestRateRoundTrip(t *testing.T) {
 		}
 		if got != r {
 			t.Errorf("round trip %d -> %q -> %d", r, b, got)
+		}
+	}
+}
+
+func TestFormatDuration(t *testing.T) {
+	for d, want := range map[time.Duration]string{
+		250 * time.Millisecond:                "250ms",
+		45 * time.Second:                      "45s",
+		3*time.Minute + 5*time.Second:         "3m05s",
+		2*time.Hour + 7*time.Minute:           "2h07m",
+		59*time.Second + 600*time.Millisecond: "1m00s",
+	} {
+		if got := FormatDuration(d); got != want {
+			t.Errorf("FormatDuration(%v) = %q, want %q", d, got, want)
 		}
 	}
 }

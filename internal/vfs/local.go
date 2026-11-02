@@ -2,8 +2,10 @@ package vfs
 
 import (
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // Local is the machine's own file system.
@@ -62,6 +64,12 @@ func (Local) Remove(path string) error { return os.Remove(path) }
 
 // Rename implements FS.
 func (Local) Rename(oldPath, newPath string) error { return os.Rename(oldPath, newPath) }
+
+// Chtimes implements FS.
+func (Local) Chtimes(path string, mtime time.Time) error { return os.Chtimes(path, mtime, mtime) }
+
+// Chmod implements FS.
+func (Local) Chmod(path string, mode fs.FileMode) error { return os.Chmod(path, mode) }
 
 // Join implements FS.
 func (Local) Join(elem ...string) string { return filepath.Join(elem...) }

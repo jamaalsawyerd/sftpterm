@@ -3,8 +3,10 @@ package vfs
 import (
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path"
+	"time"
 
 	"github.com/pkg/sftp"
 )
@@ -79,6 +81,12 @@ func (s *SFTP) Rename(oldPath, newPath string) error {
 	}
 	return s.c.Rename(oldPath, newPath)
 }
+
+// Chtimes implements FS.
+func (s *SFTP) Chtimes(p string, mtime time.Time) error { return s.c.Chtimes(p, mtime, mtime) }
+
+// Chmod implements FS.
+func (s *SFTP) Chmod(p string, mode fs.FileMode) error { return s.c.Chmod(p, mode) }
 
 // Join implements FS.
 func (*SFTP) Join(elem ...string) string { return path.Join(elem...) }
