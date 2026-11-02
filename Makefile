@@ -12,7 +12,7 @@ FUZZ_TARGETS := \
 	./internal/vfs:FuzzCheckName \
 	./internal/config:FuzzSaveRoundTrip
 
-.PHONY: build run test lint fmt tidy clean cover fuzz golden
+.PHONY: build run test lint fmt tidy clean cover fuzz golden demo
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o bin/$(BINARY) ./cmd/sftpterm
@@ -38,6 +38,11 @@ fuzz:
 # Rewrite UI snapshot files after an intentional change; review the diff.
 golden:
 	go test ./internal/ui -run Golden -update
+
+# Record demo/demo.gif with VHS against a throwaway SFTP server (Docker).
+demo: build
+	./demo/setup.sh
+	vhs demo/demo.tape; status=$$?; docker stop -t 1 sftpterm-demo >/dev/null; exit $$status
 
 lint:
 	golangci-lint run

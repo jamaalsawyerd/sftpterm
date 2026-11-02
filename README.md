@@ -1,21 +1,38 @@
 # sftpterm
 
+[![CI](https://github.com/jamaalsawyerd/sftpterm/actions/workflows/ci.yml/badge.svg)](https://github.com/jamaalsawyerd/sftpterm/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/jamaalsawyerd/sftpterm)](https://github.com/jamaalsawyerd/sftpterm/releases)
+[![Go Reference](https://pkg.go.dev/badge/github.com/jamaalsawyerd/sftpterm.svg)](https://pkg.go.dev/github.com/jamaalsawyerd/sftpterm)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A delightful terminal UI for transferring files over SFTP, built with
 [Bubble Tea](https://github.com/charmbracelet/bubbletea),
 [Lip Gloss](https://github.com/charmbracelet/lipgloss), and friends.
 
-> 🚧 **Work in progress.** Not ready for real use yet.
+![sftpterm demo](demo/demo.gif)
 
-## Planned features
+## Features
 
 - Dual-pane browser: local on the left, remote on the right
 - Connect using hosts from `~/.ssh/config`, ssh-agent, keys, or passwords
 - Strict `known_hosts` verification with a trust-on-first-use prompt
 - Transfer queue with live progress bars, throughput, and ETA
-- Configurable simultaneous transfers and upload/download speed limits
+- Configurable simultaneous transfers and upload/download speed limits,
+  globally or per host
 - Per-connection bookmarks that restore both local and remote directories,
   and reconnecting picks up where you left off
-- Themes, icons, and a little bit of flair
+- New folder, rename, delete, and file previews on either side
+- Six themes, four icon sets, and a little bit of flair
+
+## Install
+
+Download a binary for Linux, macOS, or Windows from the
+[releases page](https://github.com/jamaalsawyerd/sftpterm/releases), or with Go
+1.26+:
+
+```sh
+go install github.com/jamaalsawyerd/sftpterm/cmd/sftpterm@latest
+```
 
 ## Usage
 
@@ -95,12 +112,6 @@ man-in-the-middle attack looks like. Passwords are never stored.
 
 Not supported yet: `ProxyJump`/`ProxyCommand` and certificates.
 
-## Install
-
-```sh
-go install github.com/jamaalsawyerd/sftpterm/cmd/sftpterm@latest
-```
-
 ## Configuration
 
 sftpterm reads `~/.config/sftpterm/config.toml` (or the platform equivalent;
@@ -143,6 +154,7 @@ make lint    # run golangci-lint
 make cover   # coverage across packages
 make fuzz    # fuzz the parsers and sanitizers (FUZZTIME=30s each)
 make golden  # rewrite UI snapshots after an intentional change
+make demo    # re-record demo/demo.gif (needs Docker and VHS)
 ```
 
 Tests run real SSH and SFTP sessions against an in-process server
@@ -154,6 +166,9 @@ For a local SFTP server to test against:
 ```sh
 docker run --rm -p 2222:22 atmoz/sftp demo:demo:::upload
 ```
+
+Releases are built by [GoReleaser](https://goreleaser.com) when a `v*` tag is
+pushed.
 
 ## License
 

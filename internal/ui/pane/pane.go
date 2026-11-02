@@ -627,12 +627,17 @@ func (m Model) renderRow(r row, selected bool, iw int) string {
 	fixed := 1 + m.icons.Width() + 1 + m.icons.Width() + 1 // " mark icon "
 	nameWidth := max(iw-fixed-lipgloss.Width(right)-1, 1)
 
+	// Style only the name, not the padding after it, so an underline (the
+	// unfocused cursor) doesn't run across empty space.
+	fitted := theme.Fit(name, nameWidth)
+	text := strings.TrimRight(fitted, " ")
+	pad := fitted[len(text):]
 	return paint(plain, " ") +
 		paint(m.styles.Warning, mark) +
 		paint(plain, " ") +
 		paint(iconStyle, icon) +
 		paint(plain, " ") +
-		paint(nameStyle, theme.Fit(name, nameWidth)) +
+		paint(nameStyle, text) + paint(plain, pad) +
 		paint(m.styles.Muted, right) +
 		paint(plain, " ")
 }
