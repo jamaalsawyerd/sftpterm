@@ -6,7 +6,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -52,6 +51,14 @@ func fixture(t *testing.T) string {
 	}
 	if err := os.WriteFile(filepath.Join(root, "docs", "readme.md"), []byte("hi"), 0o644); err != nil {
 		t.Fatal(err)
+	}
+	// Pin directory times (after writing into them) so sorting by date is
+	// deterministic on every OS: docs is newer than music.
+	for d, age := range map[string]time.Duration{"docs": 4 * time.Hour, "music": 5 * time.Hour} {
+		mt := time.Now().Add(-age)
+		if err := os.Chtimes(filepath.Join(root, d), mt, mt); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return root
 }
@@ -291,7 +298,10 @@ func TestLoadErrorKeepsListingAndReportsError(t *testing.T) {
 func TestInitialLoadErrorShownInPane(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "missing")
 	m := newPane(t, missing)
-	if !strings.Contains(m.View(), "no such file") && runtime.GOOS != "windows" {
+	if !errors.Is(m.err, fs.ErrNotExist) {
+		t.Fatalf("pane error = %v, want not-exist", m.err)
+	}
+	if !strings.Contains(m.View(), "can't open missing") {
 		t.Errorf("error not shown:\n%s", m.View())
 	}
 	// Going up from a broken directory still works.

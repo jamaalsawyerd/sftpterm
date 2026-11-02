@@ -224,10 +224,10 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 func (m Model) handleLoaded(msg LoadedMsg) (Model, tea.Cmd) {
 	m.loading = false
 	if msg.err != nil {
-		if !m.loaded {
-			m.path, m.err = msg.path, msg.err
-		}
 		err := m.describeError(msg.path, msg.err)
+		if !m.loaded {
+			m.path, m.err = msg.path, err
+		}
 		return m, func() tea.Msg { return ErrorMsg{Err: err} }
 	}
 
