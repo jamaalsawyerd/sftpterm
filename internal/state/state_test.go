@@ -3,6 +3,7 @@ package state
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -19,7 +20,8 @@ func TestRoundTrip(t *testing.T) {
 	if err := s.Save(); err != nil {
 		t.Fatal(err)
 	}
-	if st, err := os.Stat(path); err != nil || st.Mode().Perm()&0o077 != 0 {
+	// Unix permissions only; Windows reports every file as 0666.
+	if st, err := os.Stat(path); err != nil || (runtime.GOOS != "windows" && st.Mode().Perm()&0o077 != 0) {
 		t.Errorf("bookmarks file should be private: %v %v", st.Mode(), err)
 	}
 
