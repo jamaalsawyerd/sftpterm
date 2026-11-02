@@ -22,6 +22,25 @@ A delightful terminal UI for transferring files over SFTP, built with
 go install github.com/jamaalsawyerd/sftpterm/cmd/sftpterm@latest
 ```
 
+## Configuration
+
+sftpterm reads `~/.config/sftpterm/config.toml` (or the platform equivalent;
+override with `--config`). Every setting is optional:
+
+```toml
+theme = "charm"        # charm, catppuccin-mocha, catppuccin-latte, dracula, tokyo-night, nord
+icons = "unicode"      # unicode, nerd, emoji, ascii
+show_hidden = false
+
+[transfers]
+concurrency = 3            # files transferred at once (1–16)
+upload_limit = "unlimited" # total across all uploads, e.g. "10MB/s", "500K"
+download_limit = "unlimited"
+```
+
+Sizes use binary units (`1 MB` = 1024 KiB). Press `T` in the app to try themes
+live, and run with `--debug` to write a log to `~/.cache/sftpterm/debug.log`.
+
 ## Development
 
 ```sh
