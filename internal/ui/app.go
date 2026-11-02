@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -17,7 +18,9 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/jamaalsawyerd/sftpterm/internal/config"
+	"github.com/jamaalsawyerd/sftpterm/internal/ui/pane"
 	"github.com/jamaalsawyerd/sftpterm/internal/ui/theme"
+	"github.com/jamaalsawyerd/sftpterm/internal/vfs"
 )
 
 // The smallest terminal we try to draw a full layout in.
@@ -28,14 +31,20 @@ const (
 
 const (
 	noticeTTL        = 3 * time.Second
+	errorNoticeTTL   = 6 * time.Second
 	startupNoticeTTL = 8 * time.Second
 )
+
+// headerHeight is the title line plus a blank line.
+const headerHeight = 2
 
 // Options configure a new Model.
 type Options struct {
 	Config config.Config
 	// Warnings are shown in the status bar at startup, e.g. unknown config keys.
 	Warnings []string
+	// StartDir is the local directory to open; defaults to the working directory.
+	StartDir string
 }
 
 type noticeKind int
@@ -43,6 +52,7 @@ type noticeKind int
 const (
 	noticeInfo noticeKind = iota
 	noticeWarn
+	noticeError
 )
 
 // clearNoticeMsg expires the status bar notice with the matching id, so an
@@ -56,7 +66,14 @@ type Model struct {
 	keys   keyMap
 	help   help.Model
 
+	local pane.Model
+	// initCmd loads the first directory. It is created in New because Init
+	// has a value receiver: state changed there (like a pane's load
+	// sequence number) would be lost.
+	initCmd tea.Cmd
+
 	width, height int
+	bodyHeight    int
 
 	notice     string
 	noticeKind noticeKind
@@ -70,11 +87,26 @@ func New(opts Options) (Model, error) {
 		return Model{}, fmt.Errorf("unknown theme %q (available: %s)",
 			opts.Config.Theme, strings.Join(theme.Names(), ", "))
 	}
+	startDir := opts.StartDir
+	if startDir == "" {
+		if wd, err := os.Getwd(); err == nil {
+			startDir = wd
+		} else if home, err := os.UserHomeDir(); err == nil {
+			startDir = home
+		}
+	}
+
 	m := Model{
 		cfg:  opts.Config,
 		keys: defaultKeys(),
 		help: help.New(),
+		local: pane.New(vfs.NewLocal(), pane.Options{
+			ShowHidden: opts.Config.ShowHidden,
+			Icons:      opts.Config.Icons,
+		}),
 	}
+	m.local.SetFocused(true)
+	m.initCmd = m.local.Navigate(startDir, "")
 	m.setPalette(p)
 	if len(opts.Warnings) > 0 {
 		m.notice = strings.Join(opts.Warnings, "; ")
@@ -87,6 +119,7 @@ func (m *Model) setPalette(p theme.Palette) {
 	m.cfg.Theme = p.Name
 	m.styles = theme.NewStyles(p)
 	m.help.Styles = m.styles.Help
+	m.local.SetStyles(m.styles)
 }
 
 // setNotice shows a transient message in the status bar.
@@ -99,11 +132,12 @@ func (m *Model) setNotice(kind noticeKind, text string, ttl time.Duration) tea.C
 
 // Init implements tea.Model.
 func (m Model) Init() tea.Cmd {
-	if m.notice == "" {
-		return nil
+	cmds := []tea.Cmd{m.initCmd}
+	if m.notice != "" {
+		id := m.noticeID
+		cmds = append(cmds, tea.Tick(startupNoticeTTL, func(time.Time) tea.Msg { return clearNoticeMsg{id: id} }))
 	}
-	id := m.noticeID
-	return tea.Tick(startupNoticeTTL, func(time.Time) tea.Msg { return clearNoticeMsg{id: id} })
+	return tea.Batch(cmds...)
 }
 
 // Update implements tea.Model.
@@ -112,25 +146,48 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.help.SetWidth(msg.Width - 2)
+		m.layout()
+		return m, nil
 
 	case clearNoticeMsg:
 		if msg.id == m.noticeID {
 			m.notice = ""
 		}
+		return m, nil
+
+	case pane.ErrorMsg:
+		log.Debug("pane error", "err", msg.Err)
+		return m, m.setNotice(noticeError, msg.Err.Error(), errorNoticeTTL)
 
 	case tea.KeyPressMsg:
-		switch {
-		case key.Matches(msg, m.keys.Quit):
-			return m, tea.Quit
-		case key.Matches(msg, m.keys.Help):
-			m.help.ShowAll = !m.help.ShowAll
-		case key.Matches(msg, m.keys.Theme):
-			m.setPalette(theme.Next(m.cfg.Theme))
-			log.Debug("theme changed", "theme", m.cfg.Theme)
-			return m, m.setNotice(noticeInfo, "theme → "+m.cfg.Theme, noticeTTL)
+		// While a filter is being typed, every key except ctrl+c belongs to it.
+		if msg.String() == "ctrl+c" || !m.local.Filtering() {
+			switch {
+			case key.Matches(msg, m.keys.Quit):
+				return m, tea.Quit
+			case key.Matches(msg, m.keys.Help):
+				m.help.ShowAll = !m.help.ShowAll
+				m.layout()
+				return m, nil
+			case key.Matches(msg, m.keys.Theme):
+				m.setPalette(theme.Next(m.cfg.Theme))
+				log.Debug("theme changed", "theme", m.cfg.Theme)
+				return m, m.setNotice(noticeInfo, "theme → "+m.cfg.Theme, noticeTTL)
+			}
 		}
 	}
-	return m, nil
+
+	var cmd tea.Cmd
+	m.local, cmd = m.local.Update(msg)
+	m.layout() // the help footer changes height when filtering starts or stops
+	return m, cmd
+}
+
+// layout distributes the terminal between header, panes, and footer.
+func (m *Model) layout() {
+	footerHeight := 1 + lipgloss.Height(m.helpView())
+	m.bodyHeight = max(m.height-headerHeight-footerHeight, 0)
+	m.local.SetSize(m.width/2, m.bodyHeight)
 }
 
 // View implements tea.Model.
@@ -149,17 +206,8 @@ func (m Model) render() string {
 		return m.tooSmallView()
 	}
 
-	header := m.headerView()
-	footer := lipgloss.JoinVertical(lipgloss.Left, m.statusView(), m.helpView())
-	bodyHeight := max(m.height-lipgloss.Height(header)-lipgloss.Height(footer), 0)
-	welcome := m.welcomeView()
-	if w, h := lipgloss.Size(welcome); w > m.width || h > bodyHeight {
-		welcome = m.compactWelcomeView()
-	}
-	welcome = lipgloss.NewStyle().MaxWidth(m.width).MaxHeight(bodyHeight).Render(welcome)
-	body := lipgloss.Place(m.width, bodyHeight, lipgloss.Center, lipgloss.Center, welcome)
-
-	return lipgloss.JoinVertical(lipgloss.Left, header, body, footer)
+	body := lipgloss.JoinHorizontal(lipgloss.Top, m.local.View(), m.remoteView(m.width-m.width/2, m.bodyHeight))
+	return lipgloss.JoinVertical(lipgloss.Left, m.headerView(), body, m.statusView(), m.helpView())
 }
 
 func (m Model) headerView() string {
@@ -174,25 +222,17 @@ func (m Model) headerView() string {
 	return " " + title + " " + rule + " " + conn + " \n"
 }
 
-func (m Model) welcomeView() string {
+// remoteView is a placeholder until connections exist.
+func (m Model) remoteView(width, height int) string {
 	p := m.styles.Palette
-	logo := theme.Gradient(lipgloss.NewStyle().Bold(true), "✦  s f t p t e r m  ✦", p.Primary, p.Accent, p.Secondary)
-	return m.styles.Card.Render(lipgloss.JoinVertical(lipgloss.Center,
-		logo,
-		"",
-		m.styles.Text.Render("files, but make it fun"),
-		"",
-		m.styles.Muted.Render("Connections are on the way."),
-		m.styles.Muted.Render("Press ")+m.styles.Help.ShortKey.Render("T")+m.styles.Muted.Render(" to try a different theme."),
-	))
-}
-
-func (m Model) compactWelcomeView() string {
-	p := m.styles.Palette
-	return lipgloss.JoinVertical(lipgloss.Center,
+	inner := lipgloss.JoinVertical(lipgloss.Center,
 		theme.Gradient(lipgloss.NewStyle().Bold(true), "✦ sftpterm ✦", p.Primary, p.Accent, p.Secondary),
 		m.styles.Muted.Render("files, but make it fun"),
+		"",
+		m.styles.Subtle.Render("remote connections are on the way"),
 	)
+	content := lipgloss.Place(max(width-2, 0), max(height-2, 0), lipgloss.Center, lipgloss.Center, inner)
+	return m.styles.Frame("Remote", "not connected", content, width, height, false)
 }
 
 func (m Model) statusView() string {
@@ -208,8 +248,12 @@ func (m Model) statusView() string {
 		avail := max(m.width-lipgloss.Width(left)-3, 0)
 		text := ansi.Truncate(m.notice, avail, "…")
 		style := m.styles.StatusSegment.Foreground(m.styles.Palette.Accent)
-		if m.noticeKind == noticeWarn {
+		switch m.noticeKind {
+		case noticeWarn:
 			style = m.styles.StatusSegment.Foreground(m.styles.Palette.Warning)
+		case noticeError:
+			style = m.styles.StatusSegment.Foreground(m.styles.Palette.Error)
+		case noticeInfo:
 		}
 		right = style.Render(text)
 	}
@@ -219,7 +263,10 @@ func (m Model) statusView() string {
 }
 
 func (m Model) helpView() string {
-	return lipgloss.NewStyle().Padding(0, 1).Render(m.help.View(m.keys))
+	keys := helpKeys{app: m.keys, pane: m.local.KeyMap(), filtering: m.local.Filtering()}
+	// MaxWidth guards against help.ShortHelpView overflowing when its "…"
+	// tail doesn't fit (bubbles v2.2.1).
+	return lipgloss.NewStyle().Padding(0, 1).MaxWidth(m.width).Render(m.help.View(keys))
 }
 
 func (m Model) tooSmallView() string {

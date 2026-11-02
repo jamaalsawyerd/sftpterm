@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -9,6 +10,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/jamaalsawyerd/sftpterm/internal/config"
+	"github.com/jamaalsawyerd/sftpterm/internal/ui/pane"
 	"github.com/jamaalsawyerd/sftpterm/internal/ui/theme"
 )
 
@@ -18,6 +20,14 @@ func newTestModel(t *testing.T) Model {
 	if err != nil {
 		t.Fatal(err)
 	}
+	return m
+}
+
+// loadLocal runs the local pane's initial directory load synchronously.
+func loadLocal(t *testing.T, m Model) Model {
+	t.Helper()
+	msg := m.local.Navigate(t.TempDir(), "")()
+	m, _ = update(t, m, msg)
 	return m
 }
 
@@ -53,8 +63,9 @@ func TestViewFitsTerminal(t *testing.T) {
 			t.Run(fmt.Sprintf("%dx%d/full=%v", sz[0], sz[1], showAll), func(t *testing.T) {
 				m := newTestModel(t)
 				m.notice = strings.Repeat("a very long warning ", 20)
-				m, _ = update(t, m, tea.WindowSizeMsg{Width: sz[0], Height: sz[1]})
 				m.help.ShowAll = showAll
+				m, _ = update(t, m, tea.WindowSizeMsg{Width: sz[0], Height: sz[1]})
+				m = loadLocal(t, m)
 
 				out := m.View().Content
 				if h := lipgloss.Height(out); h != sz[1] {
@@ -100,9 +111,14 @@ func TestNoticeExpiresOnlyForMatchingID(t *testing.T) {
 
 func TestHelpAndQuitKeys(t *testing.T) {
 	m := newTestModel(t)
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
+	before := m.bodyHeight
 	m, _ = press(t, m, '?')
 	if !m.help.ShowAll {
 		t.Error("? should expand help")
+	}
+	if m.bodyHeight >= before {
+		t.Errorf("panes should shrink to make room for full help: %d -> %d", before, m.bodyHeight)
 	}
 	_, cmd := press(t, m, 'q')
 	if cmd == nil {
@@ -110,5 +126,73 @@ func TestHelpAndQuitKeys(t *testing.T) {
 	}
 	if _, ok := cmd().(tea.QuitMsg); !ok {
 		t.Error("q should quit")
+	}
+}
+
+func TestFilteringCapturesGlobalKeys(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = loadLocal(t, m)
+	m, _ = press(t, m, '/')
+	if !m.local.Filtering() {
+		t.Fatal("/ should start filtering")
+	}
+	start := m.cfg.Theme
+	m, cmd := press(t, m, 'q')
+	if cmd != nil {
+		if _, ok := cmd().(tea.QuitMsg); ok {
+			t.Fatal("q quit while typing a filter")
+		}
+	}
+	m, _ = press(t, m, 'T')
+	if m.cfg.Theme != start {
+		t.Error("T changed the theme while typing a filter")
+	}
+	_, cmd = update(t, m, tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	if cmd == nil {
+		t.Fatal("ctrl+c should still quit")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Error("ctrl+c should still quit")
+	}
+}
+
+func TestPaneErrorBecomesNotice(t *testing.T) {
+	m := newTestModel(t)
+	m, cmd := update(t, m, pane.ErrorMsg{Err: os.ErrPermission})
+	if cmd == nil || m.noticeKind != noticeError || !strings.Contains(m.notice, "permission") {
+		t.Errorf("notice = %q (kind %d)", m.notice, m.noticeKind)
+	}
+}
+
+// Regression: Init must not depend on state changes that are lost because it
+// has a value receiver.
+func TestInitLoadsStartDir(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/hello.txt", nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(Options{Config: config.Default(), StartDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, _ = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
+	var msgs []tea.Msg
+	switch msg := m.Init()().(type) {
+	case tea.BatchMsg:
+		for _, cmd := range msg {
+			msgs = append(msgs, cmd())
+		}
+	default:
+		msgs = append(msgs, msg)
+	}
+	for _, msg := range msgs {
+		m, _ = update(t, m, msg)
+	}
+	if m.local.Path() != dir {
+		t.Fatalf("local pane path = %q, want %q", m.local.Path(), dir)
+	}
+	if !strings.Contains(m.View().Content, "hello.txt") {
+		t.Error("start dir listing not rendered")
 	}
 }
