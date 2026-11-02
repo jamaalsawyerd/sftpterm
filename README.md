@@ -13,7 +13,8 @@ A delightful terminal UI for transferring files over SFTP, built with
 - Strict `known_hosts` verification with a trust-on-first-use prompt
 - Transfer queue with live progress bars, throughput, and ETA
 - Configurable simultaneous transfers and upload/download speed limits
-- Per-connection bookmarks that restore both local and remote directories
+- Per-connection bookmarks that restore both local and remote directories,
+  and reconnecting picks up where you left off
 - Themes, icons, and a little bit of flair
 
 ## Usage
@@ -46,6 +47,19 @@ item under the cursor. Folders are copied recursively.
   file under the real name. Modification times and permissions are kept.
 - `+`/`-` change how many files transfer at once; `L` sets upload and
   download speed limits. Limits are shared by all transfers in that direction.
+
+### Bookmarks and settings
+
+- `b` bookmarks the current pair of folders (local and remote) for this
+  connection; `'` lists bookmarks to jump both panes at once. Bookmarks also
+  appear under each host on the connect screen, so you can connect straight
+  into one.
+- Reconnecting to a host reopens the folders you were last in.
+- `S` opens settings: theme, icons, hidden files, simultaneous transfers, and
+  speed limits. Apply them for this session, save them as your defaults, or
+  save transfer settings for just the current host.
+
+Bookmarks and last locations live in `bookmarks.json` next to the config file.
 
 ### Managing files
 
@@ -94,6 +108,17 @@ concurrency = 3            # files transferred at once (1–16)
 upload_limit = "unlimited" # total across all uploads, e.g. "10MB/s", "500K"
 download_limit = "unlimited"
 ```
+
+Per-host overrides (by ssh alias) take precedence over `[transfers]`:
+
+```toml
+[hosts.nas]
+concurrency = 2
+upload_limit = "5MB/s"
+```
+
+Saving settings from the app edits this file in place, keeping your comments
+and formatting.
 
 Sizes use binary units (`1 MB` = 1024 KiB). Press `T` in the app to try themes
 live, and run with `--debug` to write a log to `~/.cache/sftpterm/debug.log`.

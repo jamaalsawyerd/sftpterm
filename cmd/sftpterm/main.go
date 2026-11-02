@@ -16,6 +16,7 @@ import (
 
 	"github.com/jamaalsawyerd/sftpterm/internal/config"
 	"github.com/jamaalsawyerd/sftpterm/internal/sshx"
+	"github.com/jamaalsawyerd/sftpterm/internal/state"
 	"github.com/jamaalsawyerd/sftpterm/internal/ui"
 	"github.com/jamaalsawyerd/sftpterm/internal/ui/theme"
 )
@@ -90,7 +91,8 @@ func run(ctx context.Context, f flags, logPath string, args []string) error {
 		sshcfg = sshx.EmptySSHConfig()
 	}
 
-	opts := ui.Options{Config: cfg, Warnings: warnings, SSHConfig: sshcfg}
+	store := loadState(&warnings)
+	opts := ui.Options{Config: cfg, Warnings: warnings, SSHConfig: sshcfg, ConfigPath: f.configPath, State: store}
 	if len(args) == 1 {
 		dest, err := sshx.ParseDestination(args[0])
 		if err != nil {
@@ -138,4 +140,19 @@ func debugLogPath() string {
 		dir = os.TempDir()
 	}
 	return filepath.Join(dir, "sftpterm", "debug.log")
+}
+
+// loadState reads bookmarks next to the config file. Problems become
+// warnings: losing bookmarks shouldn't stop the app.
+func loadState(warnings *[]string) *state.Store {
+	path, err := state.DefaultPath()
+	if err != nil {
+		*warnings = append(*warnings, err.Error())
+		return nil
+	}
+	store, err := state.Load(path)
+	if err != nil {
+		*warnings = append(*warnings, err.Error())
+	}
+	return store
 }

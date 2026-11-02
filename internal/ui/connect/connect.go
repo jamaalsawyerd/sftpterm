@@ -6,6 +6,7 @@ package connect
 import (
 	"context"
 	"errors"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -17,17 +18,30 @@ import (
 	"charm.land/log/v2"
 
 	"github.com/jamaalsawyerd/sftpterm/internal/sshx"
+	"github.com/jamaalsawyerd/sftpterm/internal/state"
 	"github.com/jamaalsawyerd/sftpterm/internal/ui/theme"
+	"github.com/jamaalsawyerd/sftpterm/internal/vfs"
 )
 
 // ConnectedMsg is sent when a connection attempt succeeds. The receiver owns
-// the connection and must close it.
-type ConnectedMsg struct{ Conn *sshx.Conn }
+// the connection and must close it. LocalPath is set when the user picked a
+// bookmark, so the local pane can follow.
+type ConnectedMsg struct {
+	Conn      *sshx.Conn
+	LocalPath string
+}
 
-type state int
+// row is one selectable line in the picker: a host, or a bookmark under it.
+type row struct {
+	target   sshx.Target
+	bookmark *state.Bookmark
+	recent   bool // not in ssh config; remembered from a previous session
+}
+
+type screen int
 
 const (
-	statePick state = iota
+	statePick screen = iota
 	stateForm
 	stateConnecting
 )
@@ -59,10 +73,14 @@ type formValues struct {
 // Model is the connection screen.
 type Model struct {
 	sshcfg *sshx.SSHConfig
-	hosts  []sshx.Target
-	cursor int // index into hosts; len(hosts) is "new connection"
+	store  *state.Store
+	rows   []row
+	cursor int // index into rows; len(rows) is "new connection"
+	nHosts int // rows that are hosts (not bookmarks)
 
-	state state
+	pendingLocal string // local dir to open once connected (from a bookmark)
+
+	state screen
 	form  *huh.Form
 	vals  *formValues
 
@@ -81,14 +99,68 @@ type Model struct {
 	keys          keyMap
 }
 
-// New builds the connection screen from an OpenSSH config.
-func New(cfg *sshx.SSHConfig, styles theme.Styles) Model {
-	m := Model{sshcfg: cfg, keys: defaultKeys(), spinner: spinner.New(spinner.WithSpinner(spinner.MiniDot))}
-	for _, alias := range cfg.Hosts() {
-		m.hosts = append(m.hosts, cfg.Resolve(alias))
-	}
+// New builds the connection screen from an OpenSSH config and the saved
+// bookmarks (store may be nil).
+func New(cfg *sshx.SSHConfig, store *state.Store, styles theme.Styles) Model {
+	m := Model{sshcfg: cfg, store: store, keys: defaultKeys(), spinner: spinner.New(spinner.WithSpinner(spinner.MiniDot))}
+	m.Refresh()
 	m.SetStyles(styles)
 	return m
+}
+
+// Refresh rebuilds the host list, e.g. after bookmarks changed.
+func (m *Model) Refresh() {
+	m.rows, m.nHosts = nil, 0
+	seen := map[string]bool{}
+	addHost := func(t sshx.Target, recent bool) {
+		key := t.String()
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		m.rows = append(m.rows, row{target: t, recent: recent})
+		m.nHosts++
+		if m.store == nil {
+			return
+		}
+		for _, b := range m.store.Bookmarks(key) {
+			m.rows = append(m.rows, row{target: t, bookmark: &b})
+		}
+	}
+	for _, alias := range m.sshcfg.Hosts() {
+		addHost(m.sshcfg.Resolve(alias), false)
+	}
+	if m.store != nil {
+		keys := make([]string, 0, len(m.store.Hosts))
+		for k := range m.store.Hosts {
+			keys = append(keys, k)
+		}
+		slices.Sort(keys)
+		for _, k := range keys {
+			if d, ok := parseKey(k); ok {
+				addHost(m.sshcfg.TargetFor(d), true)
+			}
+		}
+	}
+	m.cursor = min(m.cursor, len(m.rows))
+}
+
+// parseKey turns a remembered connection key (Target.String, i.e.
+// user@alias[:port]) back into a destination. It isn't scp syntax: a colon
+// introduces a port, not a path. IPv6 aliases (several colons) are kept whole.
+func parseKey(k string) (sshx.Destination, bool) {
+	user, rest, ok := strings.Cut(k, "@")
+	if !ok || user == "" || rest == "" {
+		return sshx.Destination{}, false
+	}
+	d := sshx.Destination{User: user, Host: rest}
+	if strings.Count(rest, ":") == 1 {
+		host, port, _ := strings.Cut(rest, ":")
+		if p, err := strconv.Atoi(port); err == nil && p > 0 && p < 65536 {
+			d.Host, d.Port = host, p
+		}
+	}
+	return d, true
 }
 
 // SetStyles applies a theme.
@@ -125,6 +197,7 @@ func (m Model) CapturesKeys() bool { return m.dialog != nil || m.state == stateF
 // command line.
 func (m *Model) Connect(t sshx.Target) tea.Cmd {
 	m.abort()
+	m.pendingLocal = ""
 	m.attempt++
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancel, m.events, m.target = cancel, make(chan any), t
@@ -201,14 +274,22 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		case key.Matches(km, m.keys.Up):
 			m.cursor = max(m.cursor-1, 0)
 		case key.Matches(km, m.keys.Down):
-			m.cursor = min(m.cursor+1, len(m.hosts))
+			m.cursor = min(m.cursor+1, len(m.rows))
 		case key.Matches(km, m.keys.New):
 			return m, m.openForm()
 		case key.Matches(km, m.keys.Connect):
-			if m.cursor == len(m.hosts) {
+			if m.cursor == len(m.rows) {
 				return m, m.openForm()
 			}
-			return m, m.Connect(m.hosts[m.cursor])
+			r := m.rows[m.cursor]
+			t := r.target
+			if r.bookmark != nil {
+				t.Path = r.bookmark.Remote
+				cmd := m.Connect(t)
+				m.pendingLocal = r.bookmark.Local
+				return m, cmd
+			}
+			return m, m.Connect(t)
 		case key.Matches(km, m.keys.Cancel):
 			m.err = nil
 		}
@@ -251,8 +332,8 @@ func (m Model) handleEvent(msg eventMsg) (Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		conn := ev.conn
-		return m, func() tea.Msg { return ConnectedMsg{Conn: conn} }
+		conn, local := ev.conn, m.pendingLocal
+		return m, func() tea.Msg { return ConnectedMsg{Conn: conn, LocalPath: local} }
 	}
 	return m, waitForEvent(m.attempt, m.events)
 }
@@ -396,8 +477,10 @@ func (m Model) pickView(iw int) string {
 	}
 
 	aliasWidth := 4
-	for _, h := range m.hosts {
-		aliasWidth = max(aliasWidth, lipgloss.Width(h.Alias))
+	for _, r := range m.rows {
+		if r.bookmark == nil {
+			aliasWidth = max(aliasWidth, lipgloss.Width(r.target.Alias))
+		}
 	}
 	aliasWidth = min(aliasWidth, max(iw/2, 4))
 
@@ -409,7 +492,7 @@ func (m Model) pickView(iw int) string {
 			labelStyle = labelStyle.Foreground(p.Primary).Bold(true)
 		}
 		if detail != "" {
-			label = theme.Fit(label, aliasWidth) // align the details column
+			label = theme.Fit(label, max(aliasWidth, lipgloss.Width(label))) // align the details column
 		}
 		line := " " + marker + labelStyle.Render(label)
 		if detail != "" {
@@ -417,16 +500,28 @@ func (m Model) pickView(iw int) string {
 		}
 		b.WriteString(line + "\n")
 	}
-	for i, h := range m.hosts {
-		detail := h.User + "@" + h.Host
-		if h.Port != sshx.DefaultPort {
-			detail += ":" + strconv.Itoa(h.Port)
+	shownRecent := false
+	for i, r := range m.rows {
+		h := r.target
+		switch {
+		case r.bookmark != nil:
+			label := "  ↳ " + vfs.Sanitize(r.bookmark.Name)
+			row(i, label, theme.TruncateLeft(vfs.Sanitize(r.bookmark.Remote), max(iw-aliasWidth-8, 8)), m.styles.Muted.Foreground(p.Accent))
+		default:
+			if r.recent && !shownRecent {
+				b.WriteString("\n " + m.styles.Subtle.Render("recent") + "\n")
+				shownRecent = true
+			}
+			detail := h.User + "@" + h.Host
+			if h.Port != sshx.DefaultPort {
+				detail += ":" + strconv.Itoa(h.Port)
+			}
+			row(i, h.Alias, detail, m.styles.Text)
 		}
-		row(i, h.Alias, detail, m.styles.Text)
 	}
-	row(len(m.hosts), "+ new connection…", "", m.styles.Muted)
+	row(len(m.rows), "+ new connection…", "", m.styles.Muted)
 
-	if len(m.hosts) == 0 {
+	if m.nHosts == 0 {
 		b.WriteString("\n  " + m.styles.Subtle.Render("No hosts found in ~/.ssh/config.") + "\n")
 	}
 	return b.String()

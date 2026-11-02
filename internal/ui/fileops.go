@@ -189,6 +189,9 @@ type inputDialog struct {
 	input         textinput.Model
 	err           string
 	submit        func(string) tea.Cmd
+	// allowAnyName accepts any non-empty text (e.g. bookmark names), instead
+	// of requiring a valid file name.
+	allowAnyName bool
 }
 
 func newInputDialog(title, prompt, value string, s theme.Styles, submit func(string) tea.Cmd) *inputDialog {
@@ -214,6 +217,13 @@ func (d *inputDialog) update(msg tea.Msg) (done bool, cmd tea.Cmd) {
 			return true, nil
 		case "enter":
 			name := strings.TrimSpace(d.input.Value())
+			if d.allowAnyName {
+				if name == "" {
+					d.err = "Please enter a name."
+					return false, nil
+				}
+				return true, d.submit(vfs.Sanitize(name))
+			}
 			if err := vfs.CheckName(name); err != nil {
 				d.err = "That name can't be used: it's empty, \".\", \"..\", or contains / \\ or control characters."
 				return false, nil

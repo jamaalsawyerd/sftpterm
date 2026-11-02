@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -26,7 +27,7 @@ func TestLoadMissingFileReturnsDefaults(t *testing.T) {
 	if len(warnings) != 0 {
 		t.Errorf("unexpected warnings: %v", warnings)
 	}
-	if cfg != Default() {
+	if !reflect.DeepEqual(cfg, Default()) {
 		t.Errorf("got %+v, want defaults %+v", cfg, Default())
 	}
 }
@@ -57,7 +58,7 @@ upload_limit = "10MB/s"
 			DownloadLimit: 0,
 		},
 	}
-	if cfg != want {
+	if !reflect.DeepEqual(cfg, want) {
 		t.Errorf("got %+v, want %+v", cfg, want)
 	}
 }
@@ -81,6 +82,7 @@ func TestLoadRejectsInvalidValues(t *testing.T) {
 		"bad rate":             "[transfers]\ndownload_limit = \"warp 9\"\n",
 		"empty theme":          "theme = \"\"\n",
 		"malformed toml":       "theme = \n",
+		"bad host override":    "[hosts.nas]\nconcurrency = 50\n",
 	}
 	for name, body := range tests {
 		t.Run(name, func(t *testing.T) {

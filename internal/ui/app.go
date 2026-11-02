@@ -21,6 +21,7 @@ import (
 
 	"github.com/jamaalsawyerd/sftpterm/internal/config"
 	"github.com/jamaalsawyerd/sftpterm/internal/sshx"
+	"github.com/jamaalsawyerd/sftpterm/internal/state"
 	"github.com/jamaalsawyerd/sftpterm/internal/transfer"
 	"github.com/jamaalsawyerd/sftpterm/internal/ui/connect"
 	"github.com/jamaalsawyerd/sftpterm/internal/ui/pane"
@@ -56,6 +57,10 @@ type Options struct {
 	SSHConfig *sshx.SSHConfig
 	// Destination, if set, is connected to at startup.
 	Destination *sshx.Destination
+	// ConfigPath is where settings are saved; empty disables saving.
+	ConfigPath string
+	// State holds bookmarks and last locations; nil means don't remember.
+	State *state.Store
 }
 
 type noticeKind int
@@ -86,10 +91,16 @@ const (
 
 // Model is the root Bubble Tea model.
 type Model struct {
-	cfg    config.Config
-	styles theme.Styles
-	keys   keyMap
-	help   help.Model
+	cfg     config.Config // effective settings for this session
+	fileCfg config.Config // what's in the config file
+	cfgPath string
+	store   *state.Store
+	// transfers are the settings in effect now: the session's, or the
+	// connected host's overrides.
+	transfers config.Transfers
+	styles    theme.Styles
+	keys      keyMap
+	help      help.Model
 
 	local   pane.Model
 	connect connect.Model
@@ -99,10 +110,11 @@ type Model struct {
 	queue   queue.Model
 	focus   side
 
-	confirm  *confirmDialog
-	settings *settingsForm
-	input    *inputDialog
-	preview  *previewDialog
+	confirm   *confirmDialog
+	settings  *settingsForm
+	input     *inputDialog
+	preview   *previewDialog
+	bookmarks *bookmarkPicker
 
 	// initCmd holds the startup work. It is created in New because Init has
 	// a value receiver: state changed there (like a pane's load sequence
@@ -139,11 +151,15 @@ func New(opts Options) (Model, error) {
 	styles := theme.NewStyles(p)
 
 	m := Model{
-		cfg:     opts.Config,
-		keys:    defaultKeys(),
-		help:    help.New(),
-		local:   pane.New(vfs.NewLocal(), paneOptions(opts.Config, styles)),
-		connect: connect.New(sshcfg, styles),
+		cfg:       opts.Config,
+		fileCfg:   opts.Config,
+		cfgPath:   opts.ConfigPath,
+		store:     opts.State,
+		transfers: opts.Config.Transfers,
+		keys:      defaultKeys(),
+		help:      help.New(),
+		local:     pane.New(vfs.NewLocal(), paneOptions(opts.Config, styles)),
+		connect:   connect.New(sshcfg, opts.State, styles),
 	}
 	m.setPalette(p)
 	m.setFocus(rightSide)
@@ -232,7 +248,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.setNotice(noticeError, msg.Err.Error(), errorNoticeTTL)
 
 	case connect.ConnectedMsg:
-		return m.onConnected(msg.Conn)
+		return m.onConnected(msg.Conn, msg.LocalPath)
 
 	case disconnectedMsg:
 		if msg.conn != m.conn {
@@ -261,11 +277,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case settingsSubmittedMsg:
 		if m.settings != nil {
-			m.applyTransferSettings(m.settings.values())
-			m.settings = nil
-			return m, m.setNotice(noticeInfo, "transfer settings updated", noticeTTL)
+			return m.applySettings(m.settings)
 		}
 		return m, nil
+
+	case addBookmarkMsg:
+		return m.onAddBookmark(msg)
 
 	case settingsCancelledMsg:
 		m.settings = nil
@@ -358,6 +375,8 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.preview = nil
 		}
 		return m, cmd
+	case m.bookmarks != nil:
+		return m.updateBookmarks(msg)
 	}
 
 	if !m.focusedCapturesKeys() {
@@ -380,7 +399,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Copy) && m.focus != queueSide && (m.focus == leftSide || m.conn != nil):
 			return m.copySelection()
 		case key.Matches(msg, m.keys.MoreParallel), key.Matches(msg, m.keys.LessParallel):
-			t := m.cfg.Transfers
+			t := m.transfers
 			if key.Matches(msg, m.keys.MoreParallel) {
 				t.Concurrency = min(t.Concurrency+1, config.MaxConcurrency)
 			} else {
@@ -389,8 +408,16 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.applyTransferSettings(t)
 			return m, m.setNotice(noticeInfo, fmt.Sprintf("%d transfers at once", t.Concurrency), noticeTTL)
 		case key.Matches(msg, m.keys.Settings):
-			m.settings = newSettingsForm(m.cfg.Transfers, m.styles)
+			alias := ""
+			if m.conn != nil {
+				alias = m.conn.Target.Alias
+			}
+			m.settings = newSettingsForm(m.cfg, m.transfers, alias, m.styles)
 			return m, m.settings.form.Init()
+		case key.Matches(msg, m.keys.AddBookmark) && m.focus != queueSide && (m.focus == leftSide || m.conn != nil):
+			return m.startAddBookmark()
+		case key.Matches(msg, m.keys.Bookmarks) && m.focus != queueSide && (m.focus == leftSide || m.conn != nil):
+			return m.openBookmarks()
 		case m.focusedPane() != nil && key.Matches(msg, m.keys.NewFolder):
 			return m.startNewFolder()
 		case m.focusedPane() != nil && key.Matches(msg, m.keys.Rename):
@@ -512,7 +539,10 @@ func (m Model) onItemFinished(ev transfer.ItemDoneEvent) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) applyTransferSettings(t config.Transfers) {
-	m.cfg.Transfers = t
+	m.transfers = t
+	if m.conn == nil {
+		m.cfg.Transfers = t
+	}
 	if m.engine != nil {
 		m.engine.SetConcurrency(t.Concurrency)
 		m.engine.SetLimit(transfer.Upload, t.UploadLimit)
@@ -520,7 +550,7 @@ func (m *Model) applyTransferSettings(t config.Transfers) {
 	}
 }
 
-func (m Model) onConnected(conn *sshx.Conn) (tea.Model, tea.Cmd) {
+func (m Model) onConnected(conn *sshx.Conn, localPath string) (tea.Model, tea.Cmd) {
 	label := conn.Target.String()
 	fsys, err := vfs.NewSFTP(conn.SFTP, label)
 	if err != nil {
@@ -532,7 +562,8 @@ func (m Model) onConnected(conn *sshx.Conn) (tea.Model, tea.Cmd) {
 	}
 	m.conn = conn
 	m.remote = pane.New(fsys, paneOptions(m.cfg, m.styles))
-	t := m.cfg.Transfers
+	m.transfers = m.cfg.TransfersFor(conn.Target.Alias)
+	t := m.transfers
 	m.engine = transfer.New(transfer.Options{
 		Local: m.local.FS(), Remote: fsys, Concurrency: t.Concurrency,
 		UploadLimit: t.UploadLimit, DownloadLimit: t.DownloadLimit,
@@ -541,22 +572,41 @@ func (m Model) onConnected(conn *sshx.Conn) (tea.Model, tea.Cmd) {
 
 	home, _ := fsys.Home()
 	start := conn.Target.Path
+	cmds := []tea.Cmd{}
+	notice := "connected to " + label
 	switch {
-	case start == "":
-		start = home
-	case !strings.HasPrefix(start, "/"):
+	case start != "" && !strings.HasPrefix(start, "/"):
 		start = path.Join(home, start)
+	case start == "" && m.store != nil:
+		// Pick up where we left off with this host.
+		if last, ok := m.store.Last(conn.Target.String()); ok {
+			start = last.Remote
+			if localPath == "" {
+				localPath = last.Local
+			}
+			notice = "connected to " + label + " · back where you left off"
+		}
 	}
-	load := m.remote.Navigate(start, "")
+	if start == "" {
+		start = home
+	}
+	if localPath != "" && localPath != m.local.Path() {
+		if st, err := os.Stat(localPath); err == nil && st.IsDir() {
+			cmds = append(cmds, m.local.Navigate(localPath, ""))
+		}
+	}
+	load := m.remote.NavigateOr(start, home, "")
 	m.setFocus(rightSide)
 	m.layout()
 	log.Debug("connected", "target", label, "start", start)
 
 	wait := func() tea.Msg { return disconnectedMsg{conn: conn, err: conn.Wait()} }
-	return m, tea.Batch(load, wait, m.queue.Init(), m.setNotice(noticeInfo, "connected to "+label, noticeTTL))
+	cmds = append(cmds, load, wait, m.queue.Init(), m.setNotice(noticeInfo, notice, noticeTTL))
+	return m, tea.Batch(cmds...)
 }
 
 func (m Model) disconnect() (tea.Model, tea.Cmd) {
+	m.rememberLast()
 	conn, engine := m.conn, m.engine
 	label := conn.Target.String()
 	m.engine = nil // shut down below, in order
@@ -587,7 +637,23 @@ func shutdown(engine *transfer.Engine, conn *sshx.Conn) {
 	}
 }
 
+// rememberLast records where both panes are, for the next connection to
+// this host.
+func (m *Model) rememberLast() {
+	if m.conn == nil || m.store == nil {
+		return
+	}
+	m.store.SetLast(m.connKey(), m.local.Path(), m.remote.Path())
+	if err := m.store.Save(); err != nil {
+		log.Debug("saving state", "err", err)
+	}
+}
+
 func (m *Model) dropConnection() {
+	m.rememberLast()
+	m.transfers = m.cfg.Transfers
+	m.bookmarks = nil
+	m.connect.Refresh()
 	if m.engine != nil {
 		go m.engine.Close() // the connection is gone; workers exit as I/O fails
 		m.engine = nil
@@ -604,6 +670,7 @@ func (m *Model) dropConnection() {
 }
 
 func (m Model) quit() (tea.Model, tea.Cmd) {
+	m.rememberLast()
 	m.connect.Close()
 	shutdown(m.engine, m.conn)
 	m.engine, m.conn = nil, nil
@@ -684,6 +751,8 @@ func (m Model) dialogView() string {
 		return m.input.view(m.styles, m.width)
 	case m.preview != nil:
 		return m.preview.view(m.styles)
+	case m.bookmarks != nil:
+		return m.bookmarks.view(m.styles, m.width)
 	}
 	return ""
 }
@@ -711,7 +780,7 @@ func (m Model) headerView() string {
 }
 
 func (m Model) statusView() string {
-	t := m.cfg.Transfers
+	t := m.transfers
 	left := lipgloss.JoinHorizontal(lipgloss.Top,
 		m.styles.StatusAccent.Render(m.cfg.Theme),
 		m.styles.StatusSegment.Render("⇅ "+strconv.Itoa(t.Concurrency)+" at once"),
@@ -766,4 +835,43 @@ func Run(ctx context.Context, opts Options) error {
 		return nil
 	}
 	return err
+}
+
+// applySettings applies the settings form and saves it if asked.
+func (m Model) applySettings(f *settingsForm) (tea.Model, tea.Cmd) {
+	v := f.vals
+	m.settings = nil
+	if p, ok := theme.Get(v.theme); ok && p.Name != m.cfg.Theme {
+		m.setPalette(p)
+	}
+	m.cfg.Icons, m.cfg.ShowHidden = v.icons, v.showHidden
+	for _, p := range []*pane.Model{&m.local, &m.remote} {
+		p.SetIcons(v.icons)
+		p.SetShowHidden(v.showHidden)
+	}
+	t := f.transfers()
+	m.applyTransferSettings(t)
+
+	switch v.scope {
+	case scopeSession:
+		return m, m.setNotice(noticeInfo, "settings applied for this session", noticeTTL)
+	case scopeDefault:
+		m.cfg.Transfers = t
+		m.fileCfg.Transfers = t
+	case scopeHost:
+		m.cfg.SetHostTransfers(f.host, t)
+		m.fileCfg.SetHostTransfers(f.host, t)
+	}
+	m.fileCfg.Theme, m.fileCfg.Icons, m.fileCfg.ShowHidden = m.cfg.Theme, v.icons, v.showHidden
+	if m.cfgPath == "" {
+		return m, m.setNotice(noticeWarn, "no config file to save to; applied for this session", noticeTTL)
+	}
+	if err := config.Save(m.cfgPath, m.fileCfg); err != nil {
+		return m, m.setNotice(noticeError, "saving settings: "+err.Error(), errorNoticeTTL)
+	}
+	where := "as defaults"
+	if v.scope == scopeHost {
+		where = "for " + f.host
+	}
+	return m, m.setNotice(noticeInfo, "✓ settings saved "+where, noticeTTL)
 }

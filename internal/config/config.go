@@ -42,6 +42,44 @@ type Config struct {
 	Icons      string    `toml:"icons"`
 	ShowHidden bool      `toml:"show_hidden"`
 	Transfers  Transfers `toml:"transfers"`
+	// Hosts holds per-host overrides keyed by ssh alias, e.g. [hosts.nas].
+	Hosts map[string]HostSettings `toml:"hosts"`
+}
+
+// HostSettings override Transfers for one host. Nil fields inherit.
+type HostSettings struct {
+	Concurrency   *int        `toml:"concurrency"`
+	UploadLimit   *units.Rate `toml:"upload_limit"`
+	DownloadLimit *units.Rate `toml:"download_limit"`
+}
+
+// TransfersFor returns the transfer settings for a host alias, with its
+// overrides applied.
+func (c Config) TransfersFor(alias string) Transfers {
+	t := c.Transfers
+	h, ok := c.Hosts[alias]
+	if !ok {
+		return t
+	}
+	if h.Concurrency != nil {
+		t.Concurrency = *h.Concurrency
+	}
+	if h.UploadLimit != nil {
+		t.UploadLimit = *h.UploadLimit
+	}
+	if h.DownloadLimit != nil {
+		t.DownloadLimit = *h.DownloadLimit
+	}
+	return t
+}
+
+// SetHostTransfers stores t as the override for alias.
+func (c *Config) SetHostTransfers(alias string, t Transfers) {
+	if c.Hosts == nil {
+		c.Hosts = map[string]HostSettings{}
+	}
+	n, up, down := t.Concurrency, t.UploadLimit, t.DownloadLimit
+	c.Hosts[alias] = HostSettings{Concurrency: &n, UploadLimit: &up, DownloadLimit: &down}
 }
 
 // Transfers configures the transfer queue.
@@ -107,6 +145,11 @@ func (c Config) Validate() error {
 	}
 	if n := c.Transfers.Concurrency; n < MinConcurrency || n > MaxConcurrency {
 		errs = append(errs, fmt.Errorf("transfers.concurrency must be between %d and %d, got %d", MinConcurrency, MaxConcurrency, n))
+	}
+	for alias, h := range c.Hosts {
+		if h.Concurrency != nil && (*h.Concurrency < MinConcurrency || *h.Concurrency > MaxConcurrency) {
+			errs = append(errs, fmt.Errorf("hosts.%s.concurrency must be between %d and %d, got %d", alias, MinConcurrency, MaxConcurrency, *h.Concurrency))
+		}
 	}
 	return errors.Join(errs...)
 }

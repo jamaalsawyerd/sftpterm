@@ -16,6 +16,8 @@ type keyMap struct {
 	Rename       key.Binding
 	Delete       key.Binding
 	View         key.Binding
+	AddBookmark  key.Binding
+	Bookmarks    key.Binding
 	Disconnect   key.Binding
 	Theme        key.Binding
 	Help         key.Binding
@@ -28,7 +30,9 @@ func defaultKeys() keyMap {
 		Copy:         key.NewBinding(key.WithKeys("c", "f5"), key.WithHelp("c", "copy to other side")),
 		MoreParallel: key.NewBinding(key.WithKeys("+", "="), key.WithHelp("+/-", "parallel transfers")),
 		LessParallel: key.NewBinding(key.WithKeys("-"), key.WithHelp("-", "fewer transfers")),
-		Settings:     key.NewBinding(key.WithKeys("L"), key.WithHelp("L", "speed limits")),
+		Settings:     key.NewBinding(key.WithKeys("S", "L"), key.WithHelp("S", "settings")),
+		AddBookmark:  key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "bookmark")),
+		Bookmarks:    key.NewBinding(key.WithKeys("'", "B"), key.WithHelp("'", "bookmarks")),
 		NewFolder:    key.NewBinding(key.WithKeys("n", "f7"), key.WithHelp("n", "new folder")),
 		Rename:       key.NewBinding(key.WithKeys("r", "f2"), key.WithHelp("r", "rename")),
 		Delete:       key.NewBinding(key.WithKeys("d", "delete", "f8"), key.WithHelp("d", "delete")),
@@ -68,6 +72,8 @@ func (m Model) helpKeys() helpKeys {
 		return helpKeys{short: confirmHelp}
 	case m.preview != nil:
 		return helpKeys{short: previewHelp}
+	case m.bookmarks != nil:
+		return helpKeys{short: bookmarkHelp}
 	case m.input != nil:
 		return helpKeys{short: []key.Binding{
 			key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "confirm")),
@@ -120,7 +126,7 @@ func (m Model) helpKeys() helpKeys {
 			{p.Open, p.Parent, p.Home, p.Refresh},
 			{p.Mark, p.MarkAll, p.Filter, p.ClearFilter},
 			{g.Copy, g.View, g.NewFolder, g.Rename, g.Delete},
-			{g.MoreParallel, g.Settings},
+			{g.AddBookmark, g.Bookmarks, g.MoreParallel, g.Settings},
 			{p.Hidden, p.Sort, g.Theme},
 			append(conn, g.Help, g.Quit),
 		},

@@ -190,17 +190,39 @@ func (m Model) Marked() []vfs.Entry {
 	return out
 }
 
+// SetIcons switches the icon set.
+func (m *Model) SetIcons(name string) { m.icons = Icons(name) }
+
+// SetShowHidden shows or hides dotfiles.
+func (m *Model) SetShowHidden(show bool) {
+	if m.showHidden != show {
+		m.showHidden = show
+		m.rebuild(m.currentName())
+	}
+}
+
 // ClearMarks unmarks everything, e.g. after the marked files were queued.
 func (m *Model) ClearMarks() { clear(m.marked) }
 
 // Navigate loads path in the background. When it arrives, the cursor is placed
 // on selectName if present (or kept in place when refreshing the same path).
 func (m *Model) Navigate(path, selectName string) tea.Cmd {
+	return m.NavigateOr(path, "", selectName)
+}
+
+// NavigateOr loads path, or fallback if path can't be read (e.g. a
+// remembered directory that no longer exists).
+func (m *Model) NavigateOr(path, fallback, selectName string) tea.Cmd {
 	m.seq++
 	m.loading = true
 	id, seq, fsys := m.id, m.seq, m.fsys
 	return func() tea.Msg {
 		entries, err := fsys.ReadDir(path)
+		if err != nil && fallback != "" && fallback != path {
+			if fe, ferr := fsys.ReadDir(fallback); ferr == nil {
+				return LoadedMsg{paneID: id, seq: seq, path: fallback, entries: fe}
+			}
+		}
 		return LoadedMsg{paneID: id, seq: seq, path: path, entries: entries, err: err, selectName: selectName}
 	}
 }

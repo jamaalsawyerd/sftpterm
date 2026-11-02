@@ -182,6 +182,12 @@ func TestCancelPasswordPromptReturnsToPicker(t *testing.T) {
 // focus on the local pane.
 func connected(t *testing.T, localFiles map[string]string) (*harness, *sshtest.Server, string) {
 	t.Helper()
+	return connectedWith(t, localFiles, nil)
+}
+
+// connectedWith is connected, with a chance to adjust the options.
+func connectedWith(t *testing.T, localFiles map[string]string, adjust func(*Options)) (*harness, *sshtest.Server, string) {
+	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("the test SFTP server exposes Windows paths")
 	}
@@ -194,10 +200,14 @@ func connected(t *testing.T, localFiles map[string]string) (*harness, *sshtest.S
 			t.Fatal(err)
 		}
 	}
-	m, err := New(Options{
+	opts := Options{
 		Config: config.Default(), StartDir: local, SSHConfig: sshx.EmptySSHConfig(),
 		Destination: &sshx.Destination{User: srv.User, Host: srv.Host, Port: srv.Port},
-	})
+	}
+	if adjust != nil {
+		adjust(&opts)
+	}
+	m, err := New(opts)
 	if err != nil {
 		t.Fatal(err)
 	}
