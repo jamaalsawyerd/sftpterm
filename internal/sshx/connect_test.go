@@ -354,11 +354,13 @@ func (p *slowPrompter) ConfirmHostKey(ctx context.Context, info HostKeyInfo) (bo
 func TestSlowUserDoesNotTimeOut(t *testing.T) {
 	home := isolate(t)
 	srv := sshtest.New(t, sshtest.Options{Password: "pw"})
+	// Generous enough for a slow CI runner to do the key exchange, but
+	// shorter than the time the "user" spends on each prompt.
 	old := handshakeTimeout
-	handshakeTimeout = 300 * time.Millisecond
+	handshakeTimeout = 2 * time.Second
 	defer func() { handshakeTimeout = old }()
 
-	p := &slowPrompter{scriptedPrompter: scriptedPrompter{answers: []string{"pw"}, trust: true}, delay: 700 * time.Millisecond}
+	p := &slowPrompter{scriptedPrompter: scriptedPrompter{answers: []string{"pw"}, trust: true}, delay: 3 * time.Second}
 	if _, err := connect(t, targetFor(t, srv, home), p); err != nil {
 		t.Fatalf("slow but valid login failed: %v", err)
 	}

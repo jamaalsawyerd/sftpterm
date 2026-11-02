@@ -28,6 +28,7 @@ cover:
 	go tool cover -func=cover.out | tail -1
 
 # Go fuzzes one target per run; failures are saved under testdata/fuzz.
+# FUZZTIME is a duration (30s) or an input count (100000x).
 fuzz:
 	@set -e; for t in $(FUZZ_TARGETS); do \
 		pkg=$${t%%:*}; name=$${t##*:}; \

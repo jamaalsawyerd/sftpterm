@@ -39,8 +39,10 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+      # A fixed number of inputs rather than a duration: duration-based runs
+      # can end with a spurious "context deadline exceeded" on busy runners.
       - name: fuzz each target briefly
-        run: make fuzz FUZZTIME=15s
+        run: make fuzz FUZZTIME=100000x
 
   lint:
     runs-on: ubuntu-latest
