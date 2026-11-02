@@ -38,10 +38,14 @@ const DefaultTheme = "charm"
 
 // Config holds all user-tunable settings.
 type Config struct {
-	Theme      string    `toml:"theme"`
-	Icons      string    `toml:"icons"`
-	ShowHidden bool      `toml:"show_hidden"`
-	Transfers  Transfers `toml:"transfers"`
+	Theme      string `toml:"theme"`
+	Icons      string `toml:"icons"`
+	ShowHidden bool   `toml:"show_hidden"`
+	// Animations enables the splash screen, sliding focus, and confetti.
+	Animations bool `toml:"animations"`
+	// Bell rings the terminal bell when a long batch of transfers finishes.
+	Bell      bool      `toml:"bell"`
+	Transfers Transfers `toml:"transfers"`
 	// Hosts holds per-host overrides keyed by ssh alias, e.g. [hosts.nas].
 	Hosts map[string]HostSettings `toml:"hosts"`
 }
@@ -95,8 +99,9 @@ type Transfers struct {
 // Default returns the built-in settings.
 func Default() Config {
 	return Config{
-		Theme: DefaultTheme,
-		Icons: IconsUnicode,
+		Theme:      DefaultTheme,
+		Icons:      IconsUnicode,
+		Animations: true,
 		Transfers: Transfers{
 			Concurrency: DefaultConcurrency,
 		},

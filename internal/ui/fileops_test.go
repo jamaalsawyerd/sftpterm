@@ -8,8 +8,6 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
-
-	"github.com/jamaalsawyerd/sftpterm/internal/config"
 )
 
 // localHarness starts the app on dir with the local pane focused.
@@ -22,7 +20,7 @@ func localHarness(t *testing.T, files map[string]string) (*harness, string) {
 			t.Fatal(err)
 		}
 	}
-	m, err := New(Options{Config: config.Default(), StartDir: dir})
+	m, err := New(Options{Config: testConfig(), StartDir: dir})
 	if err != nil {
 		t.Fatal(err)
 	}

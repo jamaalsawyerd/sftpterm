@@ -52,6 +52,7 @@ upload_limit = "10MB/s"
 		Theme:      "dracula",
 		Icons:      IconsUnicode, // untouched default
 		ShowHidden: true,
+		Animations: true,
 		Transfers: Transfers{
 			Concurrency:   5,
 			UploadLimit:   units.Rate(10 * units.MiB),

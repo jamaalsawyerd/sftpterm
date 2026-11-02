@@ -39,6 +39,8 @@ func Save(path string, cfg Config) error {
 	set(root, "theme", quote(cfg.Theme), cfg.Theme == def.Theme)
 	set(root, "icons", quote(cfg.Icons), cfg.Icons == def.Icons)
 	set(root, "show_hidden", strconv.FormatBool(cfg.ShowHidden), cfg.ShowHidden == def.ShowHidden)
+	set(root, "animations", strconv.FormatBool(cfg.Animations), cfg.Animations == def.Animations)
+	set(root, "bell", strconv.FormatBool(cfg.Bell), cfg.Bell == def.Bell)
 	t, dt := cfg.Transfers, def.Transfers
 	set(transfers, "concurrency", strconv.Itoa(t.Concurrency), t.Concurrency == dt.Concurrency)
 	set(transfers, "upload_limit", quote(t.UploadLimit.String()), t.UploadLimit == dt.UploadLimit)

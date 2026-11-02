@@ -16,7 +16,7 @@ import (
 
 func newTestModel(t *testing.T) Model {
 	t.Helper()
-	m, err := New(Options{Config: config.Default()})
+	m, err := New(Options{Config: testConfig()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +173,7 @@ func TestInitLoadsStartDir(t *testing.T) {
 	if err := os.WriteFile(dir+"/hello.txt", nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	m, err := New(Options{Config: config.Default(), StartDir: dir})
+	m, err := New(Options{Config: testConfig(), StartDir: dir})
 	if err != nil {
 		t.Fatal(err)
 	}

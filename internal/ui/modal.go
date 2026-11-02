@@ -58,7 +58,7 @@ type settingsForm struct {
 
 type settingsValues struct {
 	theme, icons                  string
-	showHidden                    bool
+	showHidden, animations, bell  bool
 	concurrency, upload, download string
 	scope                         string
 }
@@ -70,6 +70,7 @@ type settingsCancelledMsg struct{}
 func newSettingsForm(cfg config.Config, t config.Transfers, host string, s theme.Styles) *settingsForm {
 	v := &settingsValues{
 		theme: cfg.Theme, icons: cfg.Icons, showHidden: cfg.ShowHidden,
+		animations: cfg.Animations, bell: cfg.Bell,
 		concurrency: strconv.Itoa(t.Concurrency),
 		upload:      t.UploadLimit.String(),
 		download:    t.DownloadLimit.String(),
@@ -90,6 +91,8 @@ func newSettingsForm(cfg config.Config, t config.Transfers, host string, s theme
 			huh.NewSelect[string]().Title("Theme").Options(huh.NewOptions(theme.Names()...)...).Value(&v.theme),
 			huh.NewSelect[string]().Title("Icons").Options(huh.NewOptions(config.IconSets...)...).Value(&v.icons),
 			huh.NewConfirm().Title("Show hidden files?").Affirmative("Show").Negative("Hide").Value(&v.showHidden),
+			huh.NewConfirm().Title("Animations?").Description("splash, sliding focus, confetti").Affirmative("On").Negative("Off").Value(&v.animations),
+			huh.NewConfirm().Title("Bell when long transfers finish?").Affirmative("Ring").Negative("Quiet").Value(&v.bell),
 		).Title("Appearance"),
 		huh.NewGroup(
 			huh.NewInput().Title("Simultaneous transfers").Description("1–16").Value(&v.concurrency).

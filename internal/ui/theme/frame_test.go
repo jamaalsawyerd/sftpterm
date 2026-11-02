@@ -65,3 +65,30 @@ func TestOverlay(t *testing.T) {
 		t.Errorf("clipped overlay = %q", ansiStrip(out))
 	}
 }
+
+func TestOverlayCells(t *testing.T) {
+	base := "..........\n..........\n.........."
+	out := OverlayCells(base, []Cell{{X: 2, Y: 0, Text: "A"}, {X: 7, Y: 0, Text: "B"}, {X: 9, Y: 2, Text: "C"}, {X: 50, Y: 1, Text: "Z"}, {X: 1, Y: 9, Text: "Z"}})
+	want := "..A....B..\n..........\n.........C"
+	if got := ansiStrip(out); got != want {
+		t.Errorf("got\n%s\nwant\n%s", got, want)
+	}
+}
+
+// Regression: many cells on one styled row used to grow the line
+// exponentially, because each splice re-copied every escape code.
+func TestOverlayCellsStaysLinear(t *testing.T) {
+	p, _ := Get("charm")
+	row := Gradient(lipgloss.NewStyle(), strings.Repeat("─", 100), p.Primary, p.Secondary)
+	var cells []Cell
+	for x := 0; x < 100; x += 3 {
+		cells = append(cells, Cell{X: x, Y: 0, Text: "*"})
+	}
+	out := OverlayCells(row, cells)
+	if len(out) > 40*len(row) {
+		t.Fatalf("line grew from %d to %d bytes", len(row), len(out))
+	}
+	if w := lipgloss.Width(out); w != 100 {
+		t.Errorf("width = %d, want 100", w)
+	}
+}

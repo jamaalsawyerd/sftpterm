@@ -92,7 +92,7 @@ func TestConnectFlowEndToEnd(t *testing.T) {
 	}
 
 	m, err := New(Options{
-		Config:      config.Default(),
+		Config:      testConfig(),
 		StartDir:    t.TempDir(),
 		SSHConfig:   sshx.EmptySSHConfig(),
 		Destination: &sshx.Destination{User: srv.User, Host: srv.Host, Port: srv.Port},
@@ -152,7 +152,7 @@ func TestCancelPasswordPromptReturnsToPicker(t *testing.T) {
 	srv := sshtest.New(t, sshtest.Options{Password: "pw"})
 
 	m, err := New(Options{
-		Config:      config.Default(),
+		Config:      testConfig(),
 		StartDir:    t.TempDir(),
 		SSHConfig:   sshx.EmptySSHConfig(),
 		Destination: &sshx.Destination{User: srv.User, Host: srv.Host, Port: srv.Port},
@@ -201,7 +201,7 @@ func connectedWith(t *testing.T, localFiles map[string]string, adjust func(*Opti
 		}
 	}
 	opts := Options{
-		Config: config.Default(), StartDir: local, SSHConfig: sshx.EmptySSHConfig(),
+		Config: testConfig(), StartDir: local, SSHConfig: sshx.EmptySSHConfig(),
 		Destination: &sshx.Destination{User: srv.User, Host: srv.Host, Port: srv.Port},
 	}
 	if adjust != nil {

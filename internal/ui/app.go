@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image/color"
 	"os"
 	"path"
 	"strconv"
@@ -24,6 +25,7 @@ import (
 	"github.com/jamaalsawyerd/sftpterm/internal/state"
 	"github.com/jamaalsawyerd/sftpterm/internal/transfer"
 	"github.com/jamaalsawyerd/sftpterm/internal/ui/connect"
+	"github.com/jamaalsawyerd/sftpterm/internal/ui/fx"
 	"github.com/jamaalsawyerd/sftpterm/internal/ui/pane"
 	"github.com/jamaalsawyerd/sftpterm/internal/ui/queue"
 	"github.com/jamaalsawyerd/sftpterm/internal/ui/theme"
@@ -124,6 +126,15 @@ type Model struct {
 	width, height int
 	bodyHeight    int
 
+	// Animation state. animating is true while a frame tick is pending, so
+	// only one tick chain ever runs.
+	animating bool
+	splash    bool
+	frame     int
+	focusX    fx.Slider
+	focusW    fx.Slider
+	confetti  *fx.Confetti
+
 	notice     string
 	noticeKind noticeKind
 	noticeID   int
@@ -160,6 +171,9 @@ func New(opts Options) (Model, error) {
 		help:      help.New(),
 		local:     pane.New(vfs.NewLocal(), paneOptions(opts.Config, styles)),
 		connect:   connect.New(sshcfg, opts.State, styles),
+		focusX:    fx.NewSlider(),
+		focusW:    fx.NewSlider(),
+		splash:    opts.Config.Animations,
 	}
 	m.setPalette(p)
 	m.setFocus(rightSide)
@@ -174,8 +188,65 @@ func New(opts Options) (Model, error) {
 		id := m.noticeID
 		cmds = append(cmds, tea.Tick(startupNoticeTTL, func(time.Time) tea.Msg { return clearNoticeMsg{id: id} }))
 	}
+	if m.splash {
+		m.animating = true
+		cmds = append(cmds, animTick())
+	}
 	m.initCmd = tea.Batch(cmds...)
 	return m, nil
+}
+
+// animTickMsg advances every running animation by one frame.
+type animTickMsg struct{}
+
+func animTick() tea.Cmd {
+	return tea.Tick(time.Second/fx.FPS, func(time.Time) tea.Msg { return animTickMsg{} })
+}
+
+// animationsRunning reports whether any animation needs another frame.
+func (m Model) animationsRunning() bool {
+	return m.splash || m.confetti != nil || m.focusX.Moving() || m.focusW.Moving()
+}
+
+func (m Model) stepAnimations() (tea.Model, tea.Cmd) {
+	m.animating = false
+	if m.splash {
+		m.frame++
+		if m.frame >= fx.SplashFrames+fx.FPS/2 { // hold the final frame briefly
+			m.splash = false
+		}
+	}
+	m.focusX.Step()
+	m.focusW.Step()
+	if m.confetti != nil && !m.confetti.Step() {
+		m.confetti = nil
+	}
+	return m, nil // Update restarts the tick if anything is still moving
+}
+
+// focusTarget is where the focus bar should sit for the current focus.
+func (m Model) focusTarget() (x, w float64) {
+	lw := m.width / 2
+	switch m.focus {
+	case rightSide:
+		return float64(lw), float64(m.width - lw)
+	case queueSide:
+		return 0, float64(m.width)
+	case leftSide:
+	}
+	return 0, float64(lw)
+}
+
+// aimFocusBar moves the focus bar to the focused side, animating if enabled.
+func (m *Model) aimFocusBar(animate bool) {
+	x, w := m.focusTarget()
+	if animate && m.cfg.Animations {
+		m.focusX.SetTarget(x)
+		m.focusW.SetTarget(w)
+		return
+	}
+	m.focusX.Jump(x)
+	m.focusW.Jump(w)
 }
 
 func paneOptions(cfg config.Config, s theme.Styles) pane.Options {
@@ -196,7 +267,11 @@ func (m *Model) setFocus(s side) {
 	if s == queueSide && !m.queue.HasItems() {
 		s = leftSide
 	}
+	changed := m.focus != s
 	m.focus = s
+	if changed {
+		m.aimFocusBar(true)
+	}
 	m.local.SetFocused(s == leftSide)
 	m.remote.SetFocused(s == rightSide && m.conn != nil)
 	m.connect.SetFocused(s == rightSide && m.conn == nil)
@@ -228,13 +303,32 @@ func (m *Model) setNotice(kind noticeKind, text string, ttl time.Duration) tea.C
 // Init implements tea.Model.
 func (m Model) Init() tea.Cmd { return m.initCmd }
 
-// Update implements tea.Model.
+// Update implements tea.Model. It wraps update so any change that starts an
+// animation also starts the frame ticker.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	next, cmd := m.update(msg)
+	nm, ok := next.(Model)
+	if !ok {
+		return next, cmd
+	}
+	if !nm.animating && nm.animationsRunning() {
+		nm.animating = true
+		cmd = tea.Batch(cmd, animTick())
+	}
+	return nm, cmd
+}
+
+func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case animTickMsg:
+		return m.stepAnimations()
+
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.help.SetWidth(msg.Width - 2)
 		m.layout()
+		m.aimFocusBar(false)
+		m.confetti = nil // sized for the old screen
 		return m, nil
 
 	case clearNoticeMsg:
@@ -264,6 +358,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case queue.IdleMsg:
 		ev := msg.IdleEvent
+		var extra []tea.Cmd
+		if m.cfg.Animations && ev.Failed == 0 && ev.Done > 0 && (ev.Elapsed >= 2*time.Second || ev.Done >= 5) {
+			p := m.styles.Palette
+			m.confetti = fx.NewConfetti(m.width, m.height, []color.Color{p.Primary, p.Secondary, p.Accent, p.Success, p.Warning}, nil)
+		}
+		if m.cfg.Bell && ev.Elapsed >= 5*time.Second {
+			extra = append(extra, tea.Raw("\a"))
+		}
 		if ev.Done+ev.Failed > 1 {
 			text := fmt.Sprintf("✓ all done: %d items, %s in %s", ev.Done, units.FormatBytes(ev.Bytes), units.FormatDuration(ev.Elapsed))
 			kind := noticeInfo
@@ -271,9 +373,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				text = fmt.Sprintf("finished with %d failed, %d done", ev.Failed, ev.Done)
 				kind = noticeWarn
 			}
-			return m, m.setNotice(kind, text, errorNoticeTTL)
+			return m, tea.Batch(append(extra, m.setNotice(kind, text, errorNoticeTTL))...)
 		}
-		return m, nil
+		return m, tea.Batch(extra...)
 
 	case settingsSubmittedMsg:
 		if m.settings != nil {
@@ -336,6 +438,11 @@ func (m Model) broadcast(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if msg.String() == "ctrl+c" {
 		return m.quit()
+	}
+	// Any key skips the splash (unless a prompt is already waiting).
+	if m.splash && !m.connect.HasDialog() {
+		m.splash = false
+		return m, nil
 	}
 	// Prompts are modal.
 	switch {
@@ -706,7 +813,31 @@ func (m Model) View() tea.View {
 	if m.conn != nil {
 		v.WindowTitle = "sftpterm · " + m.conn.Target.String()
 	}
+	v.ProgressBar = m.terminalProgress()
 	return v
+}
+
+// terminalProgress reports overall transfer progress to terminals that show
+// it in the tab or taskbar (OSC 9;4). Others ignore it.
+func (m Model) terminalProgress() *tea.ProgressBar {
+	if m.engine == nil {
+		return nil
+	}
+	snap := m.queue.Snapshot()
+	if snap.Active+snap.Queued == 0 {
+		return nil
+	}
+	var done, total int64
+	for _, it := range snap.Items {
+		if !it.State.Finished() {
+			done += it.Done
+			total += it.Total
+		}
+	}
+	if total == 0 {
+		return tea.NewProgressBar(tea.ProgressBarIndeterminate, 0)
+	}
+	return tea.NewProgressBar(tea.ProgressBarDefault, int(done*100/total))
 }
 
 func (m Model) render() string {
@@ -715,6 +846,8 @@ func (m Model) render() string {
 		return "" // waiting for the first WindowSizeMsg
 	case m.width < minWidth || m.height < minHeight:
 		return m.tooSmallView()
+	case m.splash && !m.connect.HasDialog():
+		return fx.Splash(m.styles, m.frame, m.width, m.height)
 	}
 
 	right := m.connect.View()
@@ -732,6 +865,9 @@ func (m Model) render() string {
 	if d := m.dialogView(); d != "" {
 		dw, dh := lipgloss.Size(d)
 		screen = theme.Overlay(screen, d, max((m.width-dw)/2, 0), max((m.height-dh)/2, 0))
+	}
+	if m.confetti != nil {
+		screen = theme.OverlayCells(screen, m.confetti.Cells())
 	}
 	return screen
 }
@@ -775,8 +911,20 @@ func (m Model) headerView() string {
 	ruleWidth := max(m.width-lipgloss.Width(title)-lipgloss.Width(conn)-4, 0)
 	rule := theme.Gradient(lipgloss.NewStyle(), strings.Repeat("─", ruleWidth), p.Secondary, p.Primary)
 
-	// A blank line separates the header from the body.
-	return " " + title + " " + rule + " " + conn + " \n"
+	return " " + title + " " + rule + " " + conn + " \n" + m.focusBar()
+}
+
+// focusBar is the line under the header: a glowing strip above whichever
+// side has focus, sliding when focus moves.
+func (m Model) focusBar() string {
+	x := max(min(int(m.focusX.Value()+0.5), m.width), 0)
+	w := max(min(int(m.focusW.Value()+0.5), m.width-x), 0)
+	if w < 4 {
+		return strings.Repeat(" ", m.width)
+	}
+	p := m.styles.Palette
+	bar := theme.Gradient(lipgloss.NewStyle(), strings.Repeat("▁", w-2), p.Primary, p.Accent, p.Secondary)
+	return strings.Repeat(" ", x+1) + bar + strings.Repeat(" ", m.width-x-w+1)
 }
 
 func (m Model) statusView() string {
@@ -845,6 +993,7 @@ func (m Model) applySettings(f *settingsForm) (tea.Model, tea.Cmd) {
 		m.setPalette(p)
 	}
 	m.cfg.Icons, m.cfg.ShowHidden = v.icons, v.showHidden
+	m.cfg.Animations, m.cfg.Bell = v.animations, v.bell
 	for _, p := range []*pane.Model{&m.local, &m.remote} {
 		p.SetIcons(v.icons)
 		p.SetShowHidden(v.showHidden)
@@ -863,6 +1012,7 @@ func (m Model) applySettings(f *settingsForm) (tea.Model, tea.Cmd) {
 		m.fileCfg.SetHostTransfers(f.host, t)
 	}
 	m.fileCfg.Theme, m.fileCfg.Icons, m.fileCfg.ShowHidden = m.cfg.Theme, v.icons, v.showHidden
+	m.fileCfg.Animations, m.fileCfg.Bell = v.animations, v.bell
 	if m.cfgPath == "" {
 		return m, m.setNotice(noticeWarn, "no config file to save to; applied for this session", noticeTTL)
 	}

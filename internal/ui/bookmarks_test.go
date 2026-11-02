@@ -106,7 +106,7 @@ func TestBookmarksAndLastLocation(t *testing.T) {
 	// A fresh session to the same host opens where we left off.
 	h.m.local.Navigate(local, "")
 	m, err := New(Options{
-		Config: config.Default(), StartDir: local, SSHConfig: sshx.EmptySSHConfig(), State: store,
+		Config: testConfig(), StartDir: local, SSHConfig: sshx.EmptySSHConfig(), State: store,
 		Destination: &sshx.Destination{User: srv.User, Host: srv.Host, Port: srv.Port},
 	})
 	if err != nil {

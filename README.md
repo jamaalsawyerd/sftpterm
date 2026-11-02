@@ -73,6 +73,14 @@ control characters stripped, and names that could escape the target folder
 (like `../x`) are refused, so a hostile server can't write outside the
 directory you chose or hijack your terminal.
 
+### A little bit of flair
+
+A gradient splash greets you (any key skips it), a glowing bar slides to
+whichever side has focus, and a big batch of transfers ends in confetti.
+Terminals that support it (Windows Terminal, Ghostty, iTerm2, …) also show
+overall transfer progress in the tab or taskbar. Set `animations = false` to
+turn off the motion.
+
 ### Authentication and host keys
 
 sftpterm tries, in order: keys from your ssh-agent, your key files
@@ -102,6 +110,8 @@ override with `--config`). Every setting is optional:
 theme = "charm"        # charm, catppuccin-mocha, catppuccin-latte, dracula, tokyo-night, nord
 icons = "unicode"      # unicode, nerd, emoji, ascii
 show_hidden = false
+animations = true      # splash screen, sliding focus bar, confetti
+bell = false           # ring the terminal bell when a long batch finishes
 
 [transfers]
 concurrency = 3            # files transferred at once (1–16)

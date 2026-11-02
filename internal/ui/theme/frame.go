@@ -1,6 +1,7 @@
 package theme
 
 import (
+	"slices"
 	"strings"
 
 	"charm.land/lipgloss/v2"
@@ -113,6 +114,49 @@ func Overlay(base, top string, x, y int) string {
 		left := ansi.Truncate(bl, x, "")
 		right := ansi.TruncateLeft(bl, x+lipgloss.Width(tl), "")
 		lines[row] = left + "\x1b[m" + tl + "\x1b[m" + right
+	}
+	return strings.Join(lines, "\n")
+}
+
+// Cell is one styled snippet to draw at a screen position.
+type Cell struct {
+	X, Y int
+	Text string
+}
+
+// OverlayCells draws scattered cells over base, splitting it only once.
+// Cells outside base are skipped; later cells win where they overlap.
+func OverlayCells(base string, cells []Cell) string {
+	if len(cells) == 0 {
+		return base
+	}
+	lines := strings.Split(base, "\n")
+	byRow := map[int][]Cell{}
+	for _, c := range cells {
+		if c.Y >= 0 && c.Y < len(lines) && c.X >= 0 {
+			byRow[c.Y] = append(byRow[c.Y], c)
+		}
+	}
+	for row, cs := range byRow {
+		// Cut every piece from the original line exactly once. Splicing the
+		// already-spliced line repeatedly would duplicate its escape codes
+		// on every pass (truncation keeps them), growing exponentially.
+		orig := lines[row]
+		width := lipgloss.Width(orig)
+		slices.SortStableFunc(cs, func(a, b Cell) int { return a.X - b.X })
+		var b strings.Builder
+		at := 0
+		for _, c := range cs {
+			w := lipgloss.Width(c.Text)
+			if c.X < at || c.X+w > width {
+				continue // overlaps the previous cell, or runs off the end
+			}
+			b.WriteString(ansi.Cut(orig, at, c.X))
+			b.WriteString("\x1b[m" + c.Text + "\x1b[m")
+			at = c.X + w
+		}
+		b.WriteString(ansi.TruncateLeft(orig, at, ""))
+		lines[row] = b.String()
 	}
 	return strings.Join(lines, "\n")
 }
