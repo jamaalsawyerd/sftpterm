@@ -95,3 +95,24 @@ func blank(width, height int) string {
 	line := strings.Repeat(" ", width)
 	return strings.TrimSuffix(strings.Repeat(line+"\n", height), "\n")
 }
+
+// Overlay draws top over base with its top-left corner at column x, row y,
+// keeping base visible around it. Both are multi-line styled strings.
+func Overlay(base, top string, x, y int) string {
+	lines := strings.Split(base, "\n")
+	for i, tl := range strings.Split(top, "\n") {
+		row := y + i
+		if row < 0 || row >= len(lines) {
+			continue
+		}
+		bl := lines[row]
+		bw := lipgloss.Width(bl)
+		if bw < x {
+			bl += strings.Repeat(" ", x-bw)
+		}
+		left := ansi.Truncate(bl, x, "")
+		right := ansi.TruncateLeft(bl, x+lipgloss.Width(tl), "")
+		lines[row] = left + "\x1b[m" + tl + "\x1b[m" + right
+	}
+	return strings.Join(lines, "\n")
+}

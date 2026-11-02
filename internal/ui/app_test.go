@@ -133,6 +133,7 @@ func TestFilteringCapturesGlobalKeys(t *testing.T) {
 	m := newTestModel(t)
 	m, _ = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	m = loadLocal(t, m)
+	m, _ = update(t, m, tea.KeyPressMsg{Code: tea.KeyTab})
 	m, _ = press(t, m, '/')
 	if !m.local.Filtering() {
 		t.Fatal("/ should start filtering")

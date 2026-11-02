@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/jamaalsawyerd/sftpterm/internal/config"
+	"github.com/jamaalsawyerd/sftpterm/internal/sshx"
 	"github.com/jamaalsawyerd/sftpterm/internal/ui"
 	"github.com/jamaalsawyerd/sftpterm/internal/ui/theme"
 )
@@ -30,6 +31,7 @@ type flags struct {
 	configPath string
 	theme      string
 	debug      bool
+	port       int
 }
 
 func main() {
@@ -38,18 +40,22 @@ func main() {
 	logPath := debugLogPath()
 
 	root := &cobra.Command{
-		Use:   "sftpterm",
+		Use:   "sftpterm [[user@]host[:path] | sftp://[user@]host[:port][/path]]",
 		Short: "A delightful terminal UI for transferring files over SFTP",
 		Long: "sftpterm is a dual-pane terminal file manager for moving files " +
-			"between your machine and any SFTP server.",
-		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			return run(cmd.Context(), f, logPath)
+			"between your machine and any SFTP server.\n\n" +
+			"Run it without arguments to pick a host from ~/.ssh/config, or pass " +
+			"a destination to connect straight away.",
+		Example: "  sftpterm\n  sftpterm nas\n  sftpterm jsd@nas:/srv/media\n  sftpterm -P 2222 pi@raspberrypi.local",
+		Args:    cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return run(cmd.Context(), f, logPath, args)
 		},
 	}
 	root.Flags().StringVarP(&f.configPath, "config", "c", defaultConfig, "path to the config file")
 	root.Flags().StringVar(&f.theme, "theme", "", "color theme: "+strings.Join(theme.Names(), ", "))
 	root.Flags().BoolVar(&f.debug, "debug", false, "write a debug log to "+logPath)
+	root.Flags().IntVarP(&f.port, "port", "P", 0, "port to connect to (overrides ssh config)")
 
 	if err := fang.Execute(
 		context.Background(),
@@ -61,7 +67,7 @@ func main() {
 	}
 }
 
-func run(ctx context.Context, f flags, logPath string) error {
+func run(ctx context.Context, f flags, logPath string, args []string) error {
 	closeLog, err := setupLogging(f.debug, logPath)
 	if err != nil {
 		return err
@@ -78,9 +84,31 @@ func run(ctx context.Context, f flags, logPath string) error {
 	if f.theme != "" {
 		cfg.Theme = f.theme
 	}
-	log.Debug("starting", "config", f.configPath, "theme", cfg.Theme, "warnings", warnings)
+	sshcfg, err := sshx.LoadSSHConfig(sshx.DefaultSSHConfigPath())
+	if err != nil {
+		warnings = append(warnings, err.Error())
+		sshcfg = sshx.EmptySSHConfig()
+	}
 
-	return ui.Run(ctx, ui.Options{Config: cfg, Warnings: warnings})
+	opts := ui.Options{Config: cfg, Warnings: warnings, SSHConfig: sshcfg}
+	if len(args) == 1 {
+		dest, err := sshx.ParseDestination(args[0])
+		if err != nil {
+			return err
+		}
+		if f.port != 0 {
+			if f.port < 1 || f.port > 65535 {
+				return fmt.Errorf("invalid port %d", f.port)
+			}
+			dest.Port = f.port
+		}
+		opts.Destination = &dest
+	} else if f.port != 0 {
+		return fmt.Errorf("a destination is required when using --port")
+	}
+	log.Debug("starting", "config", f.configPath, "theme", cfg.Theme, "warnings", warnings, "destination", args)
+
+	return ui.Run(ctx, opts)
 }
 
 // setupLogging routes the default logger to a file when debugging. Otherwise

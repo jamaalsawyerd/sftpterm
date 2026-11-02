@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -18,6 +19,8 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/jamaalsawyerd/sftpterm/internal/config"
+	"github.com/jamaalsawyerd/sftpterm/internal/sshx"
+	"github.com/jamaalsawyerd/sftpterm/internal/ui/connect"
 	"github.com/jamaalsawyerd/sftpterm/internal/ui/pane"
 	"github.com/jamaalsawyerd/sftpterm/internal/ui/theme"
 	"github.com/jamaalsawyerd/sftpterm/internal/vfs"
@@ -45,6 +48,10 @@ type Options struct {
 	Warnings []string
 	// StartDir is the local directory to open; defaults to the working directory.
 	StartDir string
+	// SSHConfig supplies hosts for the connection screen; nil means none.
+	SSHConfig *sshx.SSHConfig
+	// Destination, if set, is connected to at startup.
+	Destination *sshx.Destination
 }
 
 type noticeKind int
@@ -59,6 +66,19 @@ const (
 // older timer can't clear a newer notice.
 type clearNoticeMsg struct{ id int }
 
+// disconnectedMsg reports that a connection ended, by request or not.
+type disconnectedMsg struct {
+	conn *sshx.Conn
+	err  error
+}
+
+type side int
+
+const (
+	leftSide side = iota
+	rightSide
+)
+
 // Model is the root Bubble Tea model.
 type Model struct {
 	cfg    config.Config
@@ -66,10 +86,15 @@ type Model struct {
 	keys   keyMap
 	help   help.Model
 
-	local pane.Model
-	// initCmd loads the first directory. It is created in New because Init
-	// has a value receiver: state changed there (like a pane's load
-	// sequence number) would be lost.
+	local   pane.Model
+	connect connect.Model
+	remote  pane.Model
+	conn    *sshx.Conn // nil when disconnected
+	focus   side
+
+	// initCmd holds the startup work. It is created in New because Init has
+	// a value receiver: state changed there (like a pane's load sequence
+	// number) would be lost.
 	initCmd tea.Cmd
 
 	width, height int
@@ -95,24 +120,38 @@ func New(opts Options) (Model, error) {
 			startDir = home
 		}
 	}
+	sshcfg := opts.SSHConfig
+	if sshcfg == nil {
+		sshcfg = sshx.EmptySSHConfig()
+	}
+	styles := theme.NewStyles(p)
 
 	m := Model{
-		cfg:  opts.Config,
-		keys: defaultKeys(),
-		help: help.New(),
-		local: pane.New(vfs.NewLocal(), pane.Options{
-			ShowHidden: opts.Config.ShowHidden,
-			Icons:      opts.Config.Icons,
-		}),
+		cfg:     opts.Config,
+		keys:    defaultKeys(),
+		help:    help.New(),
+		local:   pane.New(vfs.NewLocal(), paneOptions(opts.Config, styles)),
+		connect: connect.New(sshcfg, styles),
 	}
-	m.local.SetFocused(true)
-	m.initCmd = m.local.Navigate(startDir, "")
 	m.setPalette(p)
+	m.setFocus(rightSide)
+
+	cmds := []tea.Cmd{m.local.Navigate(startDir, "")}
+	if opts.Destination != nil {
+		cmds = append(cmds, m.connect.Connect(sshcfg.TargetFor(*opts.Destination)))
+	}
 	if len(opts.Warnings) > 0 {
 		m.notice = strings.Join(opts.Warnings, "; ")
 		m.noticeKind = noticeWarn
+		id := m.noticeID
+		cmds = append(cmds, tea.Tick(startupNoticeTTL, func(time.Time) tea.Msg { return clearNoticeMsg{id: id} }))
 	}
+	m.initCmd = tea.Batch(cmds...)
 	return m, nil
+}
+
+func paneOptions(cfg config.Config, s theme.Styles) pane.Options {
+	return pane.Options{ShowHidden: cfg.ShowHidden, Icons: cfg.Icons, Styles: s}
 }
 
 func (m *Model) setPalette(p theme.Palette) {
@@ -120,6 +159,15 @@ func (m *Model) setPalette(p theme.Palette) {
 	m.styles = theme.NewStyles(p)
 	m.help.Styles = m.styles.Help
 	m.local.SetStyles(m.styles)
+	m.remote.SetStyles(m.styles)
+	m.connect.SetStyles(m.styles)
+}
+
+func (m *Model) setFocus(s side) {
+	m.focus = s
+	m.local.SetFocused(s == leftSide)
+	m.remote.SetFocused(s == rightSide && m.conn != nil)
+	m.connect.SetFocused(s == rightSide && m.conn == nil)
 }
 
 // setNotice shows a transient message in the status bar.
@@ -131,14 +179,7 @@ func (m *Model) setNotice(kind noticeKind, text string, ttl time.Duration) tea.C
 }
 
 // Init implements tea.Model.
-func (m Model) Init() tea.Cmd {
-	cmds := []tea.Cmd{m.initCmd}
-	if m.notice != "" {
-		id := m.noticeID
-		cmds = append(cmds, tea.Tick(startupNoticeTTL, func(time.Time) tea.Msg { return clearNoticeMsg{id: id} }))
-	}
-	return tea.Batch(cmds...)
-}
+func (m Model) Init() tea.Cmd { return m.initCmd }
 
 // Update implements tea.Model.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -159,35 +200,157 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		log.Debug("pane error", "err", msg.Err)
 		return m, m.setNotice(noticeError, msg.Err.Error(), errorNoticeTTL)
 
+	case connect.ConnectedMsg:
+		return m.onConnected(msg.Conn)
+
+	case disconnectedMsg:
+		if msg.conn != m.conn {
+			return m, nil // a connection we already let go of
+		}
+		label := m.conn.Target.String()
+		log.Debug("connection lost", "target", label, "err", msg.err)
+		m.dropConnection()
+		return m, m.setNotice(noticeError, "connection to "+label+" lost", errorNoticeTTL)
+
 	case tea.KeyPressMsg:
-		// While a filter is being typed, every key except ctrl+c belongs to it.
-		if msg.String() == "ctrl+c" || !m.local.Filtering() {
-			switch {
-			case key.Matches(msg, m.keys.Quit):
-				return m, tea.Quit
-			case key.Matches(msg, m.keys.Help):
-				m.help.ShowAll = !m.help.ShowAll
-				m.layout()
-				return m, nil
-			case key.Matches(msg, m.keys.Theme):
-				m.setPalette(theme.Next(m.cfg.Theme))
-				log.Debug("theme changed", "theme", m.cfg.Theme)
-				return m, m.setNotice(noticeInfo, "theme → "+m.cfg.Theme, noticeTTL)
-			}
+		return m.handleKey(msg)
+	}
+
+	return m.broadcast(msg)
+}
+
+// broadcast delivers a non-key message to every child. Each one ignores
+// messages that aren't addressed to it.
+func (m Model) broadcast(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmds [3]tea.Cmd
+	m.local, cmds[0] = m.local.Update(msg)
+	if m.conn != nil {
+		m.remote, cmds[1] = m.remote.Update(msg)
+	}
+	m.connect, cmds[2] = m.connect.Update(msg)
+	m.layout()
+	return m, tea.Batch(cmds[:]...)
+}
+
+func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if msg.String() == "ctrl+c" {
+		return m.quit()
+	}
+	// Prompts are modal.
+	if m.connect.HasDialog() {
+		var cmd tea.Cmd
+		m.connect, cmd = m.connect.Update(msg)
+		return m, cmd
+	}
+
+	if !m.focusedCapturesKeys() {
+		switch {
+		case key.Matches(msg, m.keys.Quit):
+			return m.quit()
+		case key.Matches(msg, m.keys.Help):
+			m.help.ShowAll = !m.help.ShowAll
+			m.layout()
+			return m, nil
+		case key.Matches(msg, m.keys.Theme):
+			m.setPalette(theme.Next(m.cfg.Theme))
+			log.Debug("theme changed", "theme", m.cfg.Theme)
+			return m, m.setNotice(noticeInfo, "theme → "+m.cfg.Theme, noticeTTL)
+		case key.Matches(msg, m.keys.SwitchPane):
+			m.setFocus(1 - m.focus)
+			return m, nil
+		case key.Matches(msg, m.keys.Disconnect) && m.conn != nil:
+			return m.disconnect()
 		}
 	}
 
 	var cmd tea.Cmd
-	m.local, cmd = m.local.Update(msg)
+	switch {
+	case m.focus == leftSide:
+		m.local, cmd = m.local.Update(msg)
+	case m.conn != nil:
+		m.remote, cmd = m.remote.Update(msg)
+	default:
+		m.connect, cmd = m.connect.Update(msg)
+	}
 	m.layout() // the help footer changes height when filtering starts or stops
 	return m, cmd
+}
+
+// focusedCapturesKeys reports whether the focused component is taking text
+// input, so global single-letter keys must not fire.
+func (m Model) focusedCapturesKeys() bool {
+	switch {
+	case m.focus == leftSide:
+		return m.local.Filtering()
+	case m.conn != nil:
+		return m.remote.Filtering()
+	default:
+		return m.connect.CapturesKeys()
+	}
+}
+
+func (m Model) onConnected(conn *sshx.Conn) (tea.Model, tea.Cmd) {
+	label := conn.Target.String()
+	fsys, err := vfs.NewSFTP(conn.SFTP, label)
+	if err != nil {
+		_ = conn.Close()
+		return m, m.setNotice(noticeError, err.Error(), errorNoticeTTL)
+	}
+	if m.conn != nil { // shouldn't happen, but never leak a connection
+		_ = m.conn.Close()
+	}
+	m.conn = conn
+	m.remote = pane.New(fsys, paneOptions(m.cfg, m.styles))
+
+	home, _ := fsys.Home()
+	start := conn.Target.Path
+	switch {
+	case start == "":
+		start = home
+	case !strings.HasPrefix(start, "/"):
+		start = path.Join(home, start)
+	}
+	load := m.remote.Navigate(start, "")
+	m.setFocus(rightSide)
+	m.layout()
+	log.Debug("connected", "target", label, "start", start)
+
+	wait := func() tea.Msg { return disconnectedMsg{conn: conn, err: conn.Wait()} }
+	return m, tea.Batch(load, wait, m.setNotice(noticeInfo, "connected to "+label, noticeTTL))
+}
+
+func (m Model) disconnect() (tea.Model, tea.Cmd) {
+	conn := m.conn
+	label := conn.Target.String()
+	m.dropConnection()
+	closeConn := func() tea.Msg { _ = conn.Close(); return nil }
+	return m, tea.Batch(closeConn, m.setNotice(noticeInfo, "disconnected from "+label, noticeTTL))
+}
+
+func (m *Model) dropConnection() {
+	m.conn = nil
+	m.remote = pane.Model{}
+	m.setFocus(m.focus)
+	m.layout()
+}
+
+func (m Model) quit() (tea.Model, tea.Cmd) {
+	m.connect.Close()
+	if m.conn != nil {
+		_ = m.conn.Close()
+		m.conn = nil
+	}
+	return m, tea.Quit
 }
 
 // layout distributes the terminal between header, panes, and footer.
 func (m *Model) layout() {
 	footerHeight := 1 + lipgloss.Height(m.helpView())
 	m.bodyHeight = max(m.height-headerHeight-footerHeight, 0)
-	m.local.SetSize(m.width/2, m.bodyHeight)
+	lw := m.width / 2
+	m.local.SetSize(lw, m.bodyHeight)
+	m.remote.SetSize(m.width-lw, m.bodyHeight)
+	m.connect.SetSize(m.width-lw, m.bodyHeight)
 }
 
 // View implements tea.Model.
@@ -195,6 +358,9 @@ func (m Model) View() tea.View {
 	v := tea.NewView(m.render())
 	v.AltScreen = true
 	v.WindowTitle = "sftpterm"
+	if m.conn != nil {
+		v.WindowTitle = "sftpterm · " + m.conn.Target.String()
+	}
 	return v
 }
 
@@ -206,33 +372,40 @@ func (m Model) render() string {
 		return m.tooSmallView()
 	}
 
-	body := lipgloss.JoinHorizontal(lipgloss.Top, m.local.View(), m.remoteView(m.width-m.width/2, m.bodyHeight))
-	return lipgloss.JoinVertical(lipgloss.Left, m.headerView(), body, m.statusView(), m.helpView())
+	right := m.connect.View()
+	if m.conn != nil {
+		right = m.remote.View()
+	}
+	body := lipgloss.JoinHorizontal(lipgloss.Top, m.local.View(), right)
+	screen := lipgloss.JoinVertical(lipgloss.Left, m.headerView(), body, m.statusView(), m.helpView())
+
+	if d := m.connect.Dialog(m.width); d != "" {
+		dw, dh := lipgloss.Size(d)
+		screen = theme.Overlay(screen, d, max((m.width-dw)/2, 0), max((m.height-dh)/2, 0))
+	}
+	return screen
 }
 
 func (m Model) headerView() string {
 	p := m.styles.Palette
 	title := theme.Gradient(lipgloss.NewStyle().Bold(true), "✦ sftpterm", p.Primary, p.Secondary)
-	conn := m.styles.Muted.Render("○ not connected")
+
+	var conn string
+	switch {
+	case m.conn != nil:
+		conn = m.styles.Success.Render("● " + m.conn.Target.String())
+	case m.connect.Connecting():
+		conn = m.styles.Warning.Render("◌ connecting to " + m.connect.Target().Alias + "…")
+	default:
+		conn = m.styles.Muted.Render("○ not connected")
+	}
+	conn = ansi.Truncate(conn, max(m.width/2, 10), "…")
 
 	ruleWidth := max(m.width-lipgloss.Width(title)-lipgloss.Width(conn)-4, 0)
 	rule := theme.Gradient(lipgloss.NewStyle(), strings.Repeat("─", ruleWidth), p.Secondary, p.Primary)
 
 	// A blank line separates the header from the body.
 	return " " + title + " " + rule + " " + conn + " \n"
-}
-
-// remoteView is a placeholder until connections exist.
-func (m Model) remoteView(width, height int) string {
-	p := m.styles.Palette
-	inner := lipgloss.JoinVertical(lipgloss.Center,
-		theme.Gradient(lipgloss.NewStyle().Bold(true), "✦ sftpterm ✦", p.Primary, p.Accent, p.Secondary),
-		m.styles.Muted.Render("files, but make it fun"),
-		"",
-		m.styles.Subtle.Render("remote connections are on the way"),
-	)
-	content := lipgloss.Place(max(width-2, 0), max(height-2, 0), lipgloss.Center, lipgloss.Center, inner)
-	return m.styles.Frame("Remote", "not connected", content, width, height, false)
 }
 
 func (m Model) statusView() string {
@@ -263,10 +436,9 @@ func (m Model) statusView() string {
 }
 
 func (m Model) helpView() string {
-	keys := helpKeys{app: m.keys, pane: m.local.KeyMap(), filtering: m.local.Filtering()}
 	// MaxWidth guards against help.ShortHelpView overflowing when its "…"
 	// tail doesn't fit (bubbles v2.2.1).
-	return lipgloss.NewStyle().Padding(0, 1).MaxWidth(m.width).Render(m.help.View(keys))
+	return lipgloss.NewStyle().Padding(0, 1).MaxWidth(m.width).Render(m.help.View(m.helpKeys()))
 }
 
 func (m Model) tooSmallView() string {
@@ -284,7 +456,10 @@ func Run(ctx context.Context, opts Options) error {
 	if err != nil {
 		return err
 	}
-	_, err = tea.NewProgram(m, tea.WithContext(ctx)).Run()
+	final, err := tea.NewProgram(m, tea.WithContext(ctx)).Run()
+	if fm, ok := final.(Model); ok && fm.conn != nil {
+		_ = fm.conn.Close()
+	}
 	if errors.Is(err, tea.ErrInterrupted) {
 		return nil
 	}

@@ -16,6 +16,34 @@ A delightful terminal UI for transferring files over SFTP, built with
 - Per-connection bookmarks that restore both local and remote directories
 - Themes, icons, and a little bit of flair
 
+## Usage
+
+```sh
+sftpterm                          # pick a host from ~/.ssh/config
+sftpterm nas                      # connect to an ssh config alias
+sftpterm jsd@nas:/srv/media       # scp-style destination with a start directory
+sftpterm -P 2222 pi@raspberrypi   # explicit port
+sftpterm sftp://jsd@nas:2222/srv  # URL form
+```
+
+Press `tab` to switch between the local and remote sides, `n` on the connect
+screen to type in a host that isn't in your ssh config, `ctrl+d` to
+disconnect, and `?` for every key.
+
+### Authentication and host keys
+
+sftpterm tries, in order: keys from your ssh-agent, your key files
+(`IdentityFile` from ssh config, or `~/.ssh/id_ed25519`, `id_ecdsa`,
+`id_rsa`), then password and keyboard-interactive prompts. Encrypted keys only
+ask for their passphrase if the server actually accepts that key.
+
+Host keys are always verified against `~/.ssh/known_hosts` (or
+`UserKnownHostsFile`). A new host shows its fingerprint and asks before being
+trusted; a **changed** key is refused outright, since that is what a
+man-in-the-middle attack looks like. Passwords are never stored.
+
+Not supported yet: `ProxyJump`/`ProxyCommand` and certificates.
+
 ## Install
 
 ```sh

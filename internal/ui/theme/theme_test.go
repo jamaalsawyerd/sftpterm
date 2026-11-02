@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestPalettesAreComplete(t *testing.T) {
@@ -57,3 +58,5 @@ func TestGradientPreservesWidth(t *testing.T) {
 		}
 	}
 }
+
+func ansiStrip(s string) string { return ansi.Strip(s) }

@@ -46,3 +46,22 @@ func TestTruncateLeft(t *testing.T) {
 		}
 	}
 }
+
+func TestOverlay(t *testing.T) {
+	base := "aaaaaaaaaa\nbbbbbbbbbb\ncccccccccc\ndddddddddd"
+	got := Overlay(base, "XX\nYY", 3, 1)
+	want := "aaaaaaaaaa\nbbbXXbbbbb\ncccYYccccc\ndddddddddd"
+	if plain := ansiStrip(got); plain != want {
+		t.Errorf("Overlay =\n%s\nwant\n%s", plain, want)
+	}
+	// Styled base content keeps its width around the overlay.
+	styled := lipgloss.NewStyle().Bold(true).Render("0123456789")
+	out := Overlay(styled, "##", 4, 0)
+	if w := lipgloss.Width(out); w != 10 || ansiStrip(out) != "0123##6789" {
+		t.Errorf("styled overlay = %q (width %d)", ansiStrip(out), w)
+	}
+	// Rows outside the base are ignored.
+	if out := Overlay("ab", "X\nY\nZ", 0, 0); ansiStrip(out) != "Xb" {
+		t.Errorf("clipped overlay = %q", ansiStrip(out))
+	}
+}
