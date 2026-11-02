@@ -1,0 +1,19 @@
+# Build output
+/bin/
+/dist/
+
+# Go
+*.test
+*.out
+coverage.*
+go.work
+go.work.sum
+
+# Debug logs written by `sftpterm --debug`
+*.log
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
