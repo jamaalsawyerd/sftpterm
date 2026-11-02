@@ -12,6 +12,10 @@ type keyMap struct {
 	MoreParallel key.Binding
 	LessParallel key.Binding
 	Settings     key.Binding
+	NewFolder    key.Binding
+	Rename       key.Binding
+	Delete       key.Binding
+	View         key.Binding
 	Disconnect   key.Binding
 	Theme        key.Binding
 	Help         key.Binding
@@ -25,6 +29,10 @@ func defaultKeys() keyMap {
 		MoreParallel: key.NewBinding(key.WithKeys("+", "="), key.WithHelp("+/-", "parallel transfers")),
 		LessParallel: key.NewBinding(key.WithKeys("-"), key.WithHelp("-", "fewer transfers")),
 		Settings:     key.NewBinding(key.WithKeys("L"), key.WithHelp("L", "speed limits")),
+		NewFolder:    key.NewBinding(key.WithKeys("n", "f7"), key.WithHelp("n", "new folder")),
+		Rename:       key.NewBinding(key.WithKeys("r", "f2"), key.WithHelp("r", "rename")),
+		Delete:       key.NewBinding(key.WithKeys("d", "delete", "f8"), key.WithHelp("d", "delete")),
+		View:         key.NewBinding(key.WithKeys("v", "f3"), key.WithHelp("v", "preview")),
 		Disconnect:   key.NewBinding(key.WithKeys("ctrl+d"), key.WithHelp("ctrl+d", "disconnect")),
 		Theme:        key.NewBinding(key.WithKeys("T"), key.WithHelp("T", "next theme")),
 		Help:         key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "more keys")),
@@ -58,6 +66,13 @@ func (m Model) helpKeys() helpKeys {
 		return helpKeys{short: m.queue.HelpKeys()}
 	case m.confirm != nil:
 		return helpKeys{short: confirmHelp}
+	case m.preview != nil:
+		return helpKeys{short: previewHelp}
+	case m.input != nil:
+		return helpKeys{short: []key.Binding{
+			key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "confirm")),
+			key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel")),
+		}}
 	case m.settings != nil:
 		return helpKeys{short: []key.Binding{
 			key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "next/apply")),
@@ -104,7 +119,8 @@ func (m Model) helpKeys() helpKeys {
 			{p.Up, p.Down, p.PageUp, p.PageDown, p.Top, p.Bottom},
 			{p.Open, p.Parent, p.Home, p.Refresh},
 			{p.Mark, p.MarkAll, p.Filter, p.ClearFilter},
-			{g.Copy, g.MoreParallel, g.Settings},
+			{g.Copy, g.View, g.NewFolder, g.Rename, g.Delete},
+			{g.MoreParallel, g.Settings},
 			{p.Hidden, p.Sort, g.Theme},
 			append(conn, g.Help, g.Quit),
 		},

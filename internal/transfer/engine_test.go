@@ -461,3 +461,54 @@ func TestSFTPRoundTrip(t *testing.T) {
 	assertNoPartFiles(t, srv.Root)
 	assertNoPartFiles(t, back)
 }
+
+// hostileFS behaves like the local FS but lists an extra entry whose name
+// tries to climb out of the directory, as a malicious server could.
+type hostileFS struct{ vfs.Local }
+
+func (h hostileFS) ReadDir(p string) ([]vfs.Entry, error) {
+	entries, err := h.Local.ReadDir(p)
+	if err != nil {
+		return nil, err
+	}
+	return append(entries, vfs.Entry{Name: "../escape.txt", Size: 4, Mode: 0o644}), nil
+}
+
+func TestHostileNamesAreRejected(t *testing.T) {
+	r := newRig(t, Options{Local: vfs.NewLocal(), Remote: hostileFS{}})
+	// Download from the "remote" (hostile) side into r.dst/inbox.
+	remoteDir := filepath.Join(r.src, "share")
+	r.write("share/fine.txt", []byte("ok"), time.Time{})
+	// What "../escape.txt" resolves to on the remote side, so the attack
+	// would have something to copy if the name were trusted.
+	r.write("escape.txt", []byte("evil"), time.Time{})
+	inbox := filepath.Join(r.dst, "inbox")
+	if err := os.Mkdir(inbox, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	share, err := vfs.NewLocal().Stat(remoteDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := r.e.Enqueue(Download, r.src, []vfs.Entry{share}, inbox)[0]
+	r.waitIdle()
+	ev := r.result(id)
+	if ev.State != Failed || !errors.Is(ev.Err, vfs.ErrUnsafeName) {
+		t.Fatalf("result = %+v, want failure with ErrUnsafeName", ev)
+	}
+	if _, err := os.Stat(filepath.Join(inbox, "escape.txt")); err == nil {
+		t.Fatal("escaped file written next to the target")
+	}
+	if _, err := os.Stat(filepath.Join(inbox, "share", "fine.txt")); err != nil {
+		t.Error("the safe file should still have been copied")
+	}
+
+	// A hostile top-level name is refused too.
+	bad := vfs.Entry{Name: "../../owned", Size: 1}
+	id = r.e.Enqueue(Download, remoteDir, []vfs.Entry{bad}, inbox)[0]
+	r.waitIdle()
+	if ev := r.result(id); ev.State != Failed || !errors.Is(ev.Err, vfs.ErrUnsafeName) {
+		t.Fatalf("top-level result = %+v", ev)
+	}
+}

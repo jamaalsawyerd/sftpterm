@@ -184,14 +184,17 @@ func (e *Engine) schedule() {
 func (e *Engine) run(t task) {
 	defer e.wg.Done()
 	var err error
-	if t.it.ctx.Err() == nil {
+	if t.src == t.it.srcPath { // a top-level item: its name came from a listing too
+		err = vfs.CheckName(t.it.name)
+	}
+	if err == nil && t.it.ctx.Err() == nil {
 		switch t.kind {
 		case scanTask:
 			err = e.scan(t)
 		case fileTask:
 			err = e.transferFile(t)
 		}
-	} else {
+	} else if err == nil {
 		err = t.it.ctx.Err()
 	}
 
@@ -295,7 +298,14 @@ func (e *Engine) scan(t task) error {
 			return err
 		}
 		var files []task
+		var bad []error
 		for _, ent := range entries {
+			// Check before joining: Join would clean "../x" into a path
+			// outside the destination. A hostile server could send that.
+			if err := vfs.CheckName(ent.Name); err != nil {
+				bad = append(bad, err)
+				continue
+			}
 			s, dd := src.Join(d.src, ent.Name), dst.Join(d.dst, ent.Name)
 			switch {
 			case ent.IsLink && ent.IsDir:
@@ -309,6 +319,12 @@ func (e *Engine) scan(t task) error {
 		}
 
 		e.mu.Lock()
+		for _, err := range bad {
+			it.failures++
+			if it.err == nil {
+				it.err = err
+			}
+		}
 		for _, f := range files {
 			it.total += f.entry.Size
 			it.files++

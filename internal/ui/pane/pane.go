@@ -59,6 +59,13 @@ type LoadedMsg struct {
 // ErrorMsg reports an error the app should surface to the user.
 type ErrorMsg struct{ Err error }
 
+// OpenFileMsg asks the app to open (preview) a file.
+type OpenFileMsg struct {
+	FS    vfs.FS
+	Path  string
+	Entry vfs.Entry
+}
+
 // Options configure a new pane.
 type Options struct {
 	ShowHidden bool
@@ -266,7 +273,7 @@ func (m Model) describeError(path string, err error) error {
 	if errors.As(err, &pe) {
 		err = pe.Err
 	}
-	return fmt.Errorf("can't open %s: %w", m.fsys.Base(path), err)
+	return fmt.Errorf("can't open %s: %w", vfs.Sanitize(m.fsys.Base(path)), err)
 }
 
 func (m Model) handleKey(msg tea.KeyPressMsg) (Model, tea.Cmd) {
@@ -363,7 +370,8 @@ func (m *Model) open() tea.Cmd {
 	case r.entry.IsDir:
 		return m.Navigate(m.fsys.Join(m.path, r.entry.Name), "")
 	}
-	return nil // opening files comes later (preview)
+	msg := OpenFileMsg{FS: m.fsys, Path: m.fsys.Join(m.path, r.entry.Name), Entry: r.entry}
+	return func() tea.Msg { return msg }
 }
 
 func (m *Model) parent() tea.Cmd {
@@ -489,13 +497,13 @@ func (m Model) View() string {
 
 func (m Model) displayPath() string {
 	if m.home == "" || !strings.HasPrefix(m.path, m.home) {
-		return m.path
+		return vfs.Sanitize(m.path)
 	}
 	rest := m.path[len(m.home):]
 	if rest == "" || rest[0] == '/' || rest[0] == '\\' {
-		return "~" + rest
+		return "~" + vfs.Sanitize(rest)
 	}
-	return m.path
+	return vfs.Sanitize(m.path)
 }
 
 func (m Model) body() string {
@@ -505,7 +513,7 @@ func (m Model) body() string {
 
 	switch {
 	case !m.loaded && m.err != nil:
-		msg := lipgloss.NewStyle().Width(max(iw-2, 1)).Render(m.err.Error())
+		msg := lipgloss.NewStyle().Width(max(iw-2, 1)).Render(vfs.Sanitize(m.err.Error()))
 		for l := range strings.SplitSeq(msg, "\n") {
 			lines = append(lines, " "+m.styles.Error.Render(l))
 		}
@@ -554,7 +562,7 @@ func (m Model) renderRow(r row, selected bool, iw int) string {
 	isMarked = isMarked && !r.parent
 
 	icon, iconStyle, nameStyle := m.icons.File, m.styles.Muted, m.styles.Text
-	name := e.Name
+	name := vfs.Sanitize(e.Name) // names may come from an untrusted server
 	switch {
 	case r.parent:
 		icon = m.icons.Parent

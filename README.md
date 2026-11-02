@@ -47,6 +47,18 @@ item under the cursor. Folders are copied recursively.
 - `+`/`-` change how many files transfer at once; `L` sets upload and
   download speed limits. Limits are shared by all transfers in that direction.
 
+### Managing files
+
+On either side: `n` new folder, `r` rename, `d` delete (marked items or the
+one under the cursor, always with a confirmation), and `v` or `enter` to
+preview a file. Previews show text with line numbers, or a hex dump for
+binary files. Rename never overwrites an existing file.
+
+Anything shown from a server (file names, previews, errors) has terminal
+control characters stripped, and names that could escape the target folder
+(like `../x`) are refused, so a hostile server can't write outside the
+directory you chose or hijack your terminal.
+
 ### Authentication and host keys
 
 sftpterm tries, in order: keys from your ssh-agent, your key files

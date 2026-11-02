@@ -101,6 +101,8 @@ type Model struct {
 
 	confirm  *confirmDialog
 	settings *settingsForm
+	input    *inputDialog
+	preview  *previewDialog
 
 	// initCmd holds the startup work. It is created in New because Init has
 	// a value receiver: state changed there (like a pane's load sequence
@@ -269,10 +271,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.settings = nil
 		return m, nil
 
+	case opDoneMsg:
+		return m.onOpDone(msg)
+
+	case pane.OpenFileMsg:
+		return m, tea.Batch(loadPreview(msg), m.setNotice(noticeInfo, "opening "+vfs.Sanitize(msg.Entry.Name)+"…", noticeTTL))
+
+	case previewMsg:
+		m.preview = newPreview(msg, m.styles, m.width, m.height)
+		m.notice = ""
+		return m, nil
+
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}
 
+	if m.input != nil { // cursor blink
+		_, cmd := m.input.update(msg)
+		mm, bcmd := m.broadcast(msg)
+		return mm, tea.Batch(cmd, bcmd)
+	}
 	if m.settings != nil {
 		f, cmd := m.settings.form.Update(msg)
 		if form, ok := f.(*huh.Form); ok {
@@ -328,6 +346,18 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.settings.form = form
 		}
 		return m, cmd
+	case m.input != nil:
+		done, cmd := m.input.update(msg)
+		if done {
+			m.input = nil
+		}
+		return m, cmd
+	case m.preview != nil:
+		done, cmd := m.preview.update(msg)
+		if done {
+			m.preview = nil
+		}
+		return m, cmd
 	}
 
 	if !m.focusedCapturesKeys() {
@@ -361,6 +391,18 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Settings):
 			m.settings = newSettingsForm(m.cfg.Transfers, m.styles)
 			return m, m.settings.form.Init()
+		case m.focusedPane() != nil && key.Matches(msg, m.keys.NewFolder):
+			return m.startNewFolder()
+		case m.focusedPane() != nil && key.Matches(msg, m.keys.Rename):
+			return m.startRename()
+		case m.focusedPane() != nil && key.Matches(msg, m.keys.Delete):
+			return m.startDelete()
+		case m.focusedPane() != nil && key.Matches(msg, m.keys.View):
+			if e, ok := m.focusedPane().Selected(); ok && !e.IsDir {
+				p := m.focusedPane()
+				return m.Update(pane.OpenFileMsg{FS: p.FS(), Path: p.FS().Join(p.Path(), e.Name), Entry: e})
+			}
+			return m, nil
 		}
 	}
 
@@ -638,6 +680,10 @@ func (m Model) dialogView() string {
 		return m.confirm.view(m.styles, m.width)
 	case m.settings != nil:
 		return m.settings.view(m.styles)
+	case m.input != nil:
+		return m.input.view(m.styles, m.width)
+	case m.preview != nil:
+		return m.preview.view(m.styles)
 	}
 	return ""
 }
