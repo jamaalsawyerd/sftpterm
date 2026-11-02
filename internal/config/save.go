@@ -124,10 +124,11 @@ func quote(s string) string {
 // doc is a line-oriented view of a TOML file, good enough to update simple
 // key = value pairs in place.
 type doc struct {
-	lines  []string
-	keys   map[string]int // table+key → line index
-	tables map[string]int // table → header line index (-1 for root)
-	ends   map[string]int // table → last key line index
+	lines   []string
+	headers []int          // line index of every table or array-of-tables header
+	keys    map[string]int // table+key → line index
+	tables  map[string]int // table → header line index (-1 for root)
+	ends    map[string]int // table → last key line index
 }
 
 var bareKey = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
@@ -166,6 +167,7 @@ func parseDoc(src string) *doc {
 func (d *doc) index() {
 	clear(d.keys)
 	clear(d.ends)
+	d.headers = d.headers[:0]
 	d.tables = map[string]int{rootID: -1}
 	current := rootID
 	for i, line := range d.lines {
@@ -174,11 +176,13 @@ func (d *doc) index() {
 		case trim == "" || strings.HasPrefix(trim, "#"):
 		case strings.HasPrefix(trim, "[["):
 			current = "\x01array" // arrays of tables: leave alone
+			d.headers = append(d.headers, i)
 		case strings.HasPrefix(trim, "["):
 			end := strings.Index(trim, "]")
 			if end < 0 {
 				continue
 			}
+			d.headers = append(d.headers, i)
 			current = lookupID(splitKeyPath(trim[1:end]))
 			if _, seen := d.tables[current]; !seen {
 				d.tables[current] = i
@@ -238,14 +242,12 @@ func (d *doc) set(table []string, key, value string) {
 	d.index()
 }
 
+// firstHeader is the line of the first header of any kind, or -1.
 func (d *doc) firstHeader() int {
-	first := -1
-	for id, i := range d.tables {
-		if id != rootID && (first < 0 || i < first) {
-			first = i
-		}
+	if len(d.headers) == 0 {
+		return -1
 	}
-	return first
+	return d.headers[0]
 }
 
 func (d *doc) insert(at int, text string) {
