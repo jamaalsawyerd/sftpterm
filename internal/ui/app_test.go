@@ -64,6 +64,7 @@ func TestViewFitsTerminal(t *testing.T) {
 				m := newTestModel(t)
 				m.notice = strings.Repeat("a very long warning ", 20)
 				m.help.ShowAll = showAll
+				m.setFocus(leftSide) // the pane's full help is the tallest
 				m, _ = update(t, m, tea.WindowSizeMsg{Width: sz[0], Height: sz[1]})
 				m = loadLocal(t, m)
 

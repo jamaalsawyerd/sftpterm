@@ -161,6 +161,9 @@ func EmptySSHConfig() *SSHConfig {
 	return c
 }
 
+// ParseSSHConfig parses config text, expanding ~ against home.
+func ParseSSHConfig(b []byte, home string) (*SSHConfig, error) { return parseSSHConfig(b, home) }
+
 func parseSSHConfig(b []byte, home string) (*SSHConfig, error) {
 	cfg, err := ssh_config.Decode(bytes.NewReader(b))
 	if err != nil {

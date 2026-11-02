@@ -96,7 +96,30 @@ func writeAtomic(path string, data []byte) error {
 	return os.Rename(tmp.Name(), path)
 }
 
-func quote(s string) string { return strconv.Quote(s) }
+// quote writes a TOML basic string. strconv.Quote is not suitable: Go
+// escapes like \x41 or \a aren't valid TOML.
+func quote(s string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range s {
+		switch {
+		case r == '"':
+			b.WriteString(`\"`)
+		case r == '\\':
+			b.WriteString(`\\`)
+		case r == '\t':
+			b.WriteString(`\t`)
+		case r == '\n':
+			b.WriteString(`\n`)
+		case r < 0x20 || r == 0x7f:
+			fmt.Fprintf(&b, `\u%04X`, r)
+		default:
+			b.WriteRune(r) // invalid UTF-8 was rejected by Validate
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
+}
 
 // doc is a line-oriented view of a TOML file, good enough to update simple
 // key = value pairs in place.
@@ -109,10 +132,30 @@ type doc struct {
 
 var bareKey = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
-func tableID(table []string) string { return strings.Join(table, "\x00") }
+// tableID names a table unambiguously: the segment count is included so the
+// root table (no segments) can't collide with a table named "".
+func tableID(table []string) string {
+	return strconv.Itoa(len(table)) + ":" + strings.Join(table, "\x00")
+}
+
+var rootID = tableID(nil)
+
+// lookupID is the table ID used to find existing tables. The TOML decoder
+// matches struct fields case-insensitively ([Transfers] fills Transfers), so
+// the editor must too, or it would add a duplicate that the old one shadows.
+// Map keys, like host aliases in [hosts.<alias>], stay case-sensitive.
+func lookupID(table []string) string {
+	t := slices.Clone(table)
+	if len(t) > 0 {
+		t[0] = strings.ToLower(t[0])
+	}
+	return tableID(t)
+}
+
+func lookupKey(id, key string) string { return id + "\x02" + strings.ToLower(key) }
 
 func parseDoc(src string) *doc {
-	d := &doc{keys: map[string]int{}, tables: map[string]int{"": -1}, ends: map[string]int{}}
+	d := &doc{keys: map[string]int{}, tables: map[string]int{rootID: -1}, ends: map[string]int{}}
 	if src != "" {
 		d.lines = strings.Split(strings.TrimSuffix(src, "\n"), "\n")
 	}
@@ -123,8 +166,8 @@ func parseDoc(src string) *doc {
 func (d *doc) index() {
 	clear(d.keys)
 	clear(d.ends)
-	d.tables = map[string]int{"": -1}
-	current := ""
+	d.tables = map[string]int{rootID: -1}
+	current := rootID
 	for i, line := range d.lines {
 		trim := strings.TrimSpace(line)
 		switch {
@@ -136,8 +179,10 @@ func (d *doc) index() {
 			if end < 0 {
 				continue
 			}
-			current = tableID(splitKeyPath(trim[1:end]))
-			d.tables[current] = i
+			current = lookupID(splitKeyPath(trim[1:end]))
+			if _, seen := d.tables[current]; !seen {
+				d.tables[current] = i
+			}
 		default:
 			k, _, ok := strings.Cut(trim, "=")
 			if !ok {
@@ -147,29 +192,29 @@ func (d *doc) index() {
 			if len(path) != 1 {
 				continue // dotted keys: not something we write
 			}
-			d.keys[current+"\x02"+path[0]] = i
+			d.keys[lookupKey(current, path[0])] = i
 			d.ends[current] = i
 		}
 	}
 }
 
 func (d *doc) has(table []string, key string) bool {
-	_, ok := d.keys[tableID(table)+"\x02"+key]
+	_, ok := d.keys[lookupKey(lookupID(table), key)]
 	return ok
 }
 
 func (d *doc) set(table []string, key, value string) {
-	id := tableID(table)
-	if i, ok := d.keys[id+"\x02"+key]; ok {
+	id := lookupID(table)
+	if i, ok := d.keys[lookupKey(id, key)]; ok {
 		d.lines[i] = replaceValue(d.lines[i], value)
 		return
 	}
 	line := formatKey(key) + " = " + value
 	switch hdr, ok := d.tables[id]; {
-	case ok && id == "":
+	case ok && id == rootID:
 		// Root keys must come before the first table header.
 		at := 0
-		if end, ok := d.ends[""]; ok {
+		if end, ok := d.ends[rootID]; ok {
 			at = end + 1
 		} else if first := d.firstHeader(); first >= 0 {
 			at = first
@@ -196,7 +241,7 @@ func (d *doc) set(table []string, key, value string) {
 func (d *doc) firstHeader() int {
 	first := -1
 	for id, i := range d.tables {
-		if id != "" && (first < 0 || i < first) {
+		if id != rootID && (first < 0 || i < first) {
 			first = i
 		}
 	}
@@ -262,21 +307,21 @@ func splitKeyPath(s string) []string {
 		case c == '"' || c == '\'':
 			quote = c
 		case c == '.':
-			parts = append(parts, strings.TrimSpace(cur.String()))
+			parts = append(parts, cur.String())
 			cur.Reset()
 		case c == ' ' || c == '\t':
 		default:
 			cur.WriteByte(c)
 		}
 	}
-	return append(parts, strings.TrimSpace(cur.String()))
+	return append(parts, cur.String())
 }
 
 func formatKey(k string) string {
 	if bareKey.MatchString(k) {
 		return k
 	}
-	return strconv.Quote(k)
+	return quote(k)
 }
 
 func formatTable(table []string) string {

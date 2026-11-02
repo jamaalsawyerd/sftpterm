@@ -140,7 +140,14 @@ make build   # build ./bin/sftpterm
 make run     # build and launch
 make test    # run tests with the race detector
 make lint    # run golangci-lint
+make cover   # coverage across packages
+make fuzz    # fuzz the parsers and sanitizers (FUZZTIME=30s each)
+make golden  # rewrite UI snapshots after an intentional change
 ```
+
+Tests run real SSH and SFTP sessions against an in-process server
+(`internal/sshx/sshtest`), and UI snapshots in `internal/ui/testdata` catch
+unintended layout changes.
 
 For a local SFTP server to test against:
 

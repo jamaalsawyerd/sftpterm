@@ -26,9 +26,21 @@ jobs:
       - name: go test
         if: runner.os != 'Linux'
         run: go test ./...
-      - name: go test (race)
+      - name: go test (race, coverage)
         if: runner.os == 'Linux'
-        run: go test -race ./...
+        run: |
+          go test -race -coverpkg=./internal/... -coverprofile=cover.out ./...
+          echo "### Coverage: $(go tool cover -func=cover.out | tail -1 | awk '{print $NF}')" >> "$GITHUB_STEP_SUMMARY"
+
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: fuzz each target briefly
+        run: make fuzz FUZZTIME=15s
 
   lint:
     runs-on: ubuntu-latest

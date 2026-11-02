@@ -1,0 +1,26 @@
+ ✦ sftpterm ─────────────────────────────────────────────────────────────────────── ○ not connected
+ ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁
+╭─ Local ~ ──────────────────────────────────────╮╭─ Connect ──────────────────────────────────────╮
+│   ↰ ..                                         ││                                                │
+│   ▸ Music/                                     ││ ✦ Where to?                                    │
+│   ▸ Photos/                                    ││                                                │
+│   ∗ deploy.sh                             25 B ││ ▸ nas   jsd@192.168.1.5                        │
+│   · notes.txt                             34 B ││   pi    pi@raspberrypi.local:2222              │
+│   · song.flac                            3 MiB ││   + new connection…                            │
+│                                                ││                                                │
+│                                                ││                                                │
+│                                                ││                                                │
+│                                                ││                                                │
+│ 5 items · 1 hidden                  sort: name ││                                                │
+╰────────────────────────────────────────────────╯╰────────────────────────────────────────────────╯
+ charm  ⇅ 3 at once  ↑ unlimited  ↓ unlimited
+ ↑/k  up           enter  open        space  mark            c copy across
+ ↓/j  down         ⌫      up a dir    ctrl+a mark all        v preview
+ pgup page up      ~      home        /      filter          n new folder
+ pgdn page down    ctrl+r refresh     esc    clear filter    r rename
+ g    top                                                    d delete
+ G    bottom
+ b   bookmark              . hidden files    tab switch side
+ '   bookmarks             s sort            ?   more keys
+ +/- parallel transfers    T next theme      q   quit
+ S   settings

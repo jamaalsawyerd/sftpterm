@@ -1,0 +1,3 @@
+# Snapshot and fuzz corpus files are compared byte for byte.
+*.golden text eol=lf
+testdata/fuzz/** text eol=lf

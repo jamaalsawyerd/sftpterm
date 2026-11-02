@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/BurntSushi/toml"
+
 	"github.com/jamaalsawyerd/sftpterm/internal/units"
 )
 
@@ -141,6 +143,19 @@ func TestSplitKeyPath(t *testing.T) {
 	} {
 		if got := splitKeyPath(in); !reflect.DeepEqual(got, want) {
 			t.Errorf("splitKeyPath(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestQuoteIsValidTOML(t *testing.T) {
+	for _, s := range []string{"plain", `back\slash`, `"quoted"`, "tab\tnew\nline", "bell\a", "ünïcødé", "del\x7f"} {
+		path := filepath.Join(t.TempDir(), "q.toml")
+		if err := os.WriteFile(path, []byte("theme = "+quote(s)+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var got struct{ Theme string }
+		if _, err := toml.DecodeFile(path, &got); err != nil || got.Theme != s {
+			t.Errorf("quote(%q) = %s: decoded %q, %v", s, quote(s), got.Theme, err)
 		}
 	}
 }

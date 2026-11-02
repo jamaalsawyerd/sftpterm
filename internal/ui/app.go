@@ -63,6 +63,8 @@ type Options struct {
 	ConfigPath string
 	// State holds bookmarks and last locations; nil means don't remember.
 	State *state.Store
+	// LocalFS replaces the machine's file system (for tests).
+	LocalFS vfs.FS
 }
 
 type noticeKind int
@@ -160,6 +162,10 @@ func New(opts Options) (Model, error) {
 		sshcfg = sshx.EmptySSHConfig()
 	}
 	styles := theme.NewStyles(p)
+	localFS := opts.LocalFS
+	if localFS == nil {
+		localFS = vfs.NewLocal()
+	}
 
 	m := Model{
 		cfg:       opts.Config,
@@ -169,7 +175,7 @@ func New(opts Options) (Model, error) {
 		transfers: opts.Config.Transfers,
 		keys:      defaultKeys(),
 		help:      help.New(),
-		local:     pane.New(vfs.NewLocal(), paneOptions(opts.Config, styles)),
+		local:     pane.New(localFS, paneOptions(opts.Config, styles)),
 		connect:   connect.New(sshcfg, opts.State, styles),
 		focusX:    fx.NewSlider(),
 		focusW:    fx.NewSlider(),
@@ -955,10 +961,40 @@ func (m Model) statusView() string {
 }
 
 func (m Model) helpView() string {
-	// MaxWidth guards against help.ShortHelpView overflowing when its "…"
-	// tail doesn't fit (bubbles v2.2.1).
-	return lipgloss.NewStyle().Padding(0, 1).MaxWidth(m.width).Render(m.help.View(m.helpKeys()))
+	keys := m.helpKeys()
+	style := lipgloss.NewStyle().Padding(0, 1).MaxWidth(m.width)
+	if !m.help.ShowAll {
+		// MaxWidth guards against help.ShortHelpView overflowing when its
+		// "…" tail doesn't fit (bubbles v2.2.1).
+		return style.Render(m.help.ShortHelpView(keys.ShortHelp()))
+	}
+	// The full help lays groups out as columns; wrap them onto more rows
+	// rather than letting narrow terminals cut columns off.
+	h := m.help
+	h.SetWidth(0)
+	avail := m.width - 2
+	var rows []string
+	var row [][]key.Binding
+	for _, g := range keys.FullHelp() {
+		if len(row) > 0 && lipgloss.Width(h.FullHelpView(append(row, g))) > avail {
+			rows = append(rows, h.FullHelpView(row))
+			row = nil
+		}
+		row = append(row, g)
+	}
+	if len(row) > 0 {
+		rows = append(rows, h.FullHelpView(row))
+	}
+	lines := strings.Split(strings.Join(rows, "\n"), "\n")
+	// Leave the panes a few rows; on short terminals, cut the help instead.
+	if limit := max(m.height-headerHeight-1-minBodyRows, 1); len(lines) > limit {
+		lines = append(lines[:limit-1], m.styles.Subtle.Render("… more keys: make the window taller"))
+	}
+	return style.Render(strings.Join(lines, "\n"))
 }
+
+// minBodyRows is the least space the panes keep when the full help is open.
+const minBodyRows = 4
 
 func (m Model) tooSmallView() string {
 	msg := lipgloss.JoinVertical(lipgloss.Center,

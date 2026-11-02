@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/BurntSushi/toml"
 
@@ -142,6 +143,16 @@ func Load(path string) (cfg Config, warnings []string, err error) {
 // Validate checks that every setting is within its accepted range.
 func (c Config) Validate() error {
 	var errs []error
+	for name, v := range map[string]string{"theme": c.Theme, "icons": c.Icons} {
+		if !utf8.ValidString(v) {
+			errs = append(errs, fmt.Errorf("%s is not valid UTF-8", name))
+		}
+	}
+	for alias := range c.Hosts {
+		if !utf8.ValidString(alias) {
+			errs = append(errs, fmt.Errorf("host alias %q is not valid UTF-8", alias))
+		}
+	}
 	if strings.TrimSpace(c.Theme) == "" {
 		errs = append(errs, errors.New("theme must not be empty"))
 	}

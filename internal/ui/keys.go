@@ -27,7 +27,7 @@ type keyMap struct {
 func defaultKeys() keyMap {
 	return keyMap{
 		SwitchPane:   key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "switch side")),
-		Copy:         key.NewBinding(key.WithKeys("c", "f5"), key.WithHelp("c", "copy to other side")),
+		Copy:         key.NewBinding(key.WithKeys("c", "f5"), key.WithHelp("c", "copy across")),
 		MoreParallel: key.NewBinding(key.WithKeys("+", "="), key.WithHelp("+/-", "parallel transfers")),
 		LessParallel: key.NewBinding(key.WithKeys("-"), key.WithHelp("-", "fewer transfers")),
 		Settings:     key.NewBinding(key.WithKeys("S", "L"), key.WithHelp("S", "settings")),
