@@ -120,6 +120,10 @@ type Model struct {
 	preview   *previewDialog
 	bookmarks *bookmarkPicker
 
+	// deleting is the delete running in the background, if any.
+	deleting  *deleteJob
+	deleteSeq int
+
 	// initCmd holds the startup work. It is created in New because Init has
 	// a value receiver: state changed there (like a pane's load sequence
 	// number) would be lost.
@@ -399,6 +403,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case opDoneMsg:
 		return m.onOpDone(msg)
 
+	case deleteTickMsg:
+		return m.onDeleteTick(msg)
+
+	case deleteDoneMsg:
+		return m.onDeleteDone(msg)
+
 	case pane.OpenFileMsg:
 		return m, tea.Batch(loadPreview(msg), m.setNotice(noticeInfo, "opening "+vfs.Sanitize(msg.Entry.Name)+"…", noticeTTL))
 
@@ -495,7 +505,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if !m.focusedCapturesKeys() {
 		switch {
 		case key.Matches(msg, m.keys.Quit):
-			return m.confirmIfBusy("Quit sftpterm?", (Model).quit)
+			return m.confirmIfBusy("Quit sftpterm?", true, (Model).quit)
 		case key.Matches(msg, m.keys.Help):
 			m.help.ShowAll = !m.help.ShowAll
 			m.layout()
@@ -508,7 +518,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.setFocus(m.nextFocus())
 			return m, nil
 		case key.Matches(msg, m.keys.Disconnect) && m.conn != nil:
-			return m.confirmIfBusy("Disconnect?", (Model).disconnect)
+			return m.confirmIfBusy("Disconnect?", false, (Model).disconnect)
 		case key.Matches(msg, m.keys.Copy) && m.focus != queueSide && (m.focus == leftSide || m.conn != nil):
 			return m.copySelection()
 		case key.Matches(msg, m.keys.MoreParallel), key.Matches(msg, m.keys.LessParallel):
@@ -579,17 +589,22 @@ func (m Model) focusedCapturesKeys() bool {
 	}
 }
 
-// confirmIfBusy runs action now, or asks first if transfers are running.
-func (m Model) confirmIfBusy(title string, action func(Model) (tea.Model, tea.Cmd)) (tea.Model, tea.Cmd) {
-	if m.engine == nil || !m.engine.Busy() {
+// confirmIfBusy runs action now, or asks first if transfers or a delete it
+// would interrupt are running. Disconnecting only interrupts remote deletes;
+// quitting interrupts any.
+func (m Model) confirmIfBusy(title string, quitting bool, action func(Model) (tea.Model, tea.Cmd)) (tea.Model, tea.Cmd) {
+	var reasons []string
+	if m.engine != nil && m.engine.Busy() {
+		n := m.queue.Snapshot().Active + m.queue.Snapshot().Queued
+		reasons = append(reasons, fmt.Sprintf("%d transfers are still in progress. They will be cancelled and partial files removed.", max(n, 1)))
+	}
+	if m.deleting != nil && (quitting || m.deleting.fsys != m.local.FS()) {
+		reasons = append(reasons, "Still deleting "+m.deleting.what+". Stopping now may leave it partly deleted.")
+	}
+	if len(reasons) == 0 {
 		return action(m)
 	}
-	n := m.queue.Snapshot().Active + m.queue.Snapshot().Queued
-	m.confirm = &confirmDialog{
-		title: title,
-		body:  fmt.Sprintf("%d transfers are still in progress. They will be cancelled and partial files removed.", max(n, 1)),
-		yes:   action,
-	}
+	m.confirm = &confirmDialog{title: title, body: strings.Join(reasons, "\n\n"), yes: action}
 	return m, nil
 }
 
@@ -941,9 +956,14 @@ func (m Model) statusView() string {
 		m.styles.StatusSegment.Render("↑ "+t.UploadLimit.String()+"  ↓ "+t.DownloadLimit.String()),
 	)
 
+	avail := max(m.width-lipgloss.Width(left)-3, 0)
+	busy := ""
+	if d := m.deleteStatus(); d != "" {
+		busy = m.styles.StatusSegment.Foreground(m.styles.Palette.Error).Render(ansi.Truncate(d, avail, "…"))
+		avail = max(avail-lipgloss.Width(busy), 0)
+	}
 	right := ""
-	if m.notice != "" {
-		avail := max(m.width-lipgloss.Width(left)-3, 0)
+	if m.notice != "" && avail > 1 {
 		text := ansi.Truncate(m.notice, avail, "…")
 		style := m.styles.StatusSegment.Foreground(m.styles.Palette.Accent)
 		switch m.noticeKind {
@@ -955,6 +975,7 @@ func (m Model) statusView() string {
 		}
 		right = style.Render(text)
 	}
+	right += busy
 
 	gap := max(m.width-lipgloss.Width(left)-lipgloss.Width(right), 0)
 	return left + m.styles.StatusBar.Render(strings.Repeat(" ", gap)) + right

@@ -97,6 +97,11 @@ type Model struct {
 	cursor, offset int
 	marked         map[string]struct{}
 
+	// busy names in busyDir are being deleted; they render struck through
+	// until they are dropped from the listing.
+	busyDir string
+	busy    map[string]struct{}
+
 	focused    bool
 	showHidden bool
 	sortMode   SortMode
@@ -203,6 +208,45 @@ func (m *Model) SetShowHidden(show bool) {
 
 // ClearMarks unmarks everything, e.g. after the marked files were queued.
 func (m *Model) ClearMarks() { clear(m.marked) }
+
+// SetBusy shows names in dir as being deleted. It replaces any earlier busy
+// set; call it with no names to clear it.
+func (m *Model) SetBusy(dir string, names ...string) {
+	m.busyDir = dir
+	m.busy = make(map[string]struct{}, len(names))
+	for _, n := range names {
+		m.busy[n] = struct{}{}
+	}
+}
+
+// Drop removes names from the listing without reloading, if dir is the
+// directory shown. The cursor stays on the same entry, or at the same height
+// if that entry was dropped, rather than jumping to the top.
+func (m *Model) Drop(dir string, names ...string) {
+	if dir != m.path || len(names) == 0 {
+		return
+	}
+	gone := make(map[string]bool, len(names))
+	for _, n := range names {
+		gone[n] = true
+		delete(m.marked, n)
+		delete(m.busy, n)
+	}
+	cur, at := m.currentName(), m.cursor
+	m.all = slices.DeleteFunc(m.all, func(e vfs.Entry) bool { return gone[e.Name] })
+	if gone[cur] {
+		m.rebuild("")
+		m.cursor = at
+	} else {
+		m.rebuild(cur)
+	}
+	m.ensureVisible()
+}
+
+func (m Model) isBusy(name string) bool {
+	_, ok := m.busy[name]
+	return ok && m.path == m.busyDir
+}
 
 // Navigate loads path in the background. When it arrives, the cursor is placed
 // on selectName if present (or kept in place when refreshing the same path).
@@ -585,7 +629,14 @@ func (m Model) renderRow(r row, selected bool, iw int) string {
 
 	icon, iconStyle, nameStyle := m.icons.File, m.styles.Muted, m.styles.Text
 	name := vfs.Sanitize(e.Name) // names may come from an untrusted server
+	busy := !r.parent && m.isBusy(e.Name)
 	switch {
+	case busy:
+		if e.IsDir {
+			icon, name = m.icons.Dir, name+"/"
+		}
+		iconStyle, nameStyle = m.styles.Subtle, m.styles.Subtle.Strikethrough(true)
+		isMarked = false
 	case r.parent:
 		icon = m.icons.Parent
 		nameStyle = m.styles.Muted
@@ -612,10 +663,13 @@ func (m Model) renderRow(r row, selected bool, iw int) string {
 		nameStyle = nameStyle.Underline(true)
 	}
 
-	right := ""
+	right, rightStyle := "", m.styles.Muted
 	if iw >= 30 {
 		size := ""
-		if !e.IsDir && !r.parent {
+		switch {
+		case busy:
+			size, rightStyle = "deleting…", m.styles.Error
+		case !e.IsDir && !r.parent:
 			size = units.FormatBytes(e.Size)
 		}
 		right += " " + padLeft(size, sizeWidth)
@@ -638,7 +692,7 @@ func (m Model) renderRow(r row, selected bool, iw int) string {
 		paint(iconStyle, icon) +
 		paint(plain, " ") +
 		paint(nameStyle, text) + paint(plain, pad) +
-		paint(m.styles.Muted, right) +
+		paint(rightStyle, right) +
 		paint(plain, " ")
 }
 
@@ -670,6 +724,9 @@ func (m Model) footer(iw int) string {
 			left = append(left, m.styles.Subtle.Render(strconv.Itoa(hidden)+" hidden"))
 		}
 	}
+	if n := m.busyCount(); n > 0 {
+		left = append(left, m.styles.Error.Render(strconv.Itoa(n)+" deleting"))
+	}
 	if marked := m.Marked(); len(marked) > 0 {
 		var total int64
 		for _, e := range marked {
@@ -686,6 +743,16 @@ func (m Model) footer(iw int) string {
 		return l + strings.Repeat(" ", gap) + r
 	}
 	return l
+}
+
+func (m Model) busyCount() int {
+	n := 0
+	for _, e := range m.all {
+		if m.isBusy(e.Name) {
+			n++
+		}
+	}
+	return n
 }
 
 func plural(n int, word string) string {
