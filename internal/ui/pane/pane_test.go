@@ -384,3 +384,33 @@ func TestDisplayPathAbbreviatesHome(t *testing.T) {
 		}
 	}
 }
+
+func TestBusyAndDropKeepCursorInPlace(t *testing.T) {
+	root := fixture(t)
+	m := newPane(t, root)
+	// Rows: .., docs, music, alpha.txt, Beta.txt, zeta.bin. Cursor on alpha.txt.
+	for range 3 {
+		m = press(t, m, "j")
+	}
+	m.SetBusy(root, "alpha.txt", "music")
+	if v := m.View(); strings.Count(v, "deleting…") != 2 || !strings.Contains(v, "2 deleting") {
+		t.Fatalf("busy rows not shown:\n%s", v)
+	}
+	m.SetBusy("/somewhere/else", "Beta.txt")
+	if strings.Contains(m.View(), "deleting") {
+		t.Error("busy names for another directory should not show")
+	}
+
+	m.Drop("/somewhere/else", "alpha.txt")
+	assertNames(t, m, "..", "docs", "music", "alpha.txt", "Beta.txt", "zeta.bin")
+
+	m.Drop(root, "alpha.txt", "music")
+	assertNames(t, m, "..", "docs", "Beta.txt", "zeta.bin")
+	if e, _ := m.Selected(); e.Name != "zeta.bin" {
+		t.Errorf("cursor on %q, want it to stay at the same row (zeta.bin)", e.Name)
+	}
+	m.Drop(root, "docs")
+	if e, _ := m.Selected(); e.Name != "zeta.bin" {
+		t.Errorf("cursor on %q, want it to follow zeta.bin", e.Name)
+	}
+}

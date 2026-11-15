@@ -13,7 +13,6 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"charm.land/log/v2"
 
 	"github.com/jamaalsawyerd/sftpterm/internal/ui/pane"
 	"github.com/jamaalsawyerd/sftpterm/internal/ui/theme"
@@ -118,6 +117,9 @@ func (m Model) startDelete() (tea.Model, tea.Cmd) {
 	if len(entries) == 0 {
 		return m, nil
 	}
+	if m.deleting != nil {
+		return m, m.setNotice(noticeWarn, "still deleting "+m.deleting.what+"; try again when it's done", noticeTTL)
+	}
 	fsys, dir := p.FS(), p.Path()
 
 	var size int64
@@ -143,20 +145,7 @@ func (m Model) startDelete() (tea.Model, tea.Cmd) {
 	body += "\nThis can't be undone."
 
 	m.confirm = &confirmDialog{title: "Delete?", body: body, yes: func(m Model) (tea.Model, tea.Cmd) {
-		if p := m.focusedPane(); p != nil {
-			p.ClearMarks()
-		}
-		run := func() tea.Msg {
-			var errs []error
-			for _, e := range entries {
-				if err := vfs.RemoveAll(fsys, fsys.Join(dir, e.Name)); err != nil {
-					errs = append(errs, err)
-				}
-			}
-			log.Debug("deleted", "count", len(entries), "dir", dir, "errors", len(errs))
-			return opDoneMsg{fsys: fsys, dir: dir, err: errors.Join(errs...), notice: "deleted " + what}
-		}
-		return m, tea.Batch(run, m.setNotice(noticeInfo, "deleting "+what+"…", noticeTTL))
+		return m.startDeleteJob(fsys, dir, what, entries)
 	}}
 	return m, nil
 }

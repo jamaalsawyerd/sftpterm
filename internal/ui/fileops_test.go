@@ -5,9 +5,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/jamaalsawyerd/sftpterm/internal/vfs/vfstest"
 )
 
 // localHarness starts the app on dir with the local pane focused.
@@ -162,5 +165,78 @@ func TestPreviewSanitizesContent(t *testing.T) {
 	h.until("binary preview", func(m Model) bool { return m.preview != nil })
 	if !strings.Contains(ansi.Strip(h.m.preview.view(h.m.styles)), "binary") {
 		t.Error("binary file not labelled as binary")
+	}
+}
+
+// gatedFS holds every Remove until the test lets it through, so a delete can
+// be watched while it is part-way done.
+type gatedFS struct {
+	*vfstest.MemFS
+	gate chan struct{}
+}
+
+func (g gatedFS) Remove(p string) error {
+	<-g.gate
+	return g.MemFS.Remove(p)
+}
+
+func TestDeleteShowsLiveProgress(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	mem := vfstest.New("Local", "/home/jsd")
+	for _, f := range []string{"tree/a", "tree/b", "tree/sub/c", "notes.txt", "keep.txt"} {
+		mem.WriteFile("/home/jsd/"+f, []byte("x"), 0o644, time.Time{})
+	}
+	fsys := gatedFS{MemFS: mem, gate: make(chan struct{})}
+	t.Cleanup(func() { close(fsys.gate) }) // let a stuck worker finish
+	m, err := New(Options{Config: testConfig(), StartDir: "/home/jsd", LocalFS: fsys})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newHarness(t, m)
+	h.until("listing", func(m Model) bool { return m.local.Path() == "/home/jsd" })
+	h.key(tea.KeyPressMsg{Code: tea.KeyTab})
+
+	h.selectName("tree")
+	h.typeText(" ")
+	h.selectName("notes.txt")
+	h.typeText(" ")
+	h.typeText("d")
+	h.typeText("y")
+
+	// Nothing is removed yet: both entries show as being deleted.
+	h.until("busy rows", func(m Model) bool { return strings.Count(ansi.Strip(m.local.View()), "deleting…") == 2 })
+	if s := h.screen(); !strings.Contains(s, "deleting 1 of 2") || !strings.Contains(s, "2 deleting") {
+		t.Fatalf("expected delete progress in the status bar and pane footer:\n%s", s)
+	}
+	h.typeText("d")
+	h.until("second delete refused", func(m Model) bool { return strings.Contains(m.notice, "still deleting") })
+
+	// Entries go in listing order: notes.txt first, then the tree. Release
+	// removals from a goroutine: the worker only starts once the harness
+	// pumps messages.
+	release := func(n int) {
+		go func() {
+			for range n {
+				fsys.gate <- struct{}{}
+			}
+		}()
+	}
+	release(1)
+	h.until("notes.txt dropped while the tree is still going", func(m Model) bool {
+		v := ansi.Strip(m.local.View())
+		return !strings.Contains(v, "notes.txt") && strings.Contains(v, "tree/") && strings.Contains(v, "1 deleting")
+	})
+	if s := h.screen(); !strings.Contains(s, "deleting 2 of 2") || !strings.Contains(s, "1 removed") {
+		t.Fatalf("expected updated progress:\n%s", s)
+	}
+
+	// The tree is a, b, sub/c, sub, and tree itself.
+	release(4)
+	h.until("progress inside the tree", func(m Model) bool { return strings.Contains(m.deleteStatus(), "5 removed · tree/sub") })
+	release(1)
+	h.until("done", func(m Model) bool { return m.deleting == nil && strings.Contains(m.notice, "deleted 2 items") })
+	v := ansi.Strip(h.m.local.View())
+	if strings.Contains(v, "notes.txt") || strings.Contains(v, "deleting") || !strings.Contains(v, "keep.txt") {
+		t.Fatalf("unexpected listing after delete:\n%s", v)
 	}
 }

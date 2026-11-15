@@ -55,7 +55,12 @@ func TestRemoveAll(t *testing.T) {
 		t.Skip("symlinks unavailable:", err)
 	}
 
-	must(t, RemoveAll(NewLocal(), tree))
+	var removed []string
+	must(t, RemoveAllFunc(NewLocal(), tree, func(p string) { removed = append(removed, p) }))
+	// tree, a, a/b, a/b/f, top, link: children are reported before parents.
+	if len(removed) != 6 || removed[len(removed)-1] != tree {
+		t.Errorf("removed = %q, want 6 paths ending with the tree itself", removed)
+	}
 	if _, err := os.Stat(tree); !os.IsNotExist(err) {
 		t.Errorf("tree still exists: %v", err)
 	}

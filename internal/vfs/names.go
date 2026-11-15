@@ -63,7 +63,11 @@ func Sanitize(s string) string {
 
 // RemoveAll deletes path and, for directories, everything inside it.
 // Directory symlinks are removed as links, never followed.
-func RemoveAll(fsys FS, path string) error {
+func RemoveAll(fsys FS, path string) error { return RemoveAllFunc(fsys, path, nil) }
+
+// RemoveAllFunc is RemoveAll, calling removed (if not nil) with the path of
+// each file and directory after it is deleted, so callers can show progress.
+func RemoveAllFunc(fsys FS, path string, removed func(path string)) error {
 	e, err := fsys.Stat(path)
 	if err != nil {
 		return err
@@ -74,12 +78,18 @@ func RemoveAll(fsys FS, path string) error {
 			return err
 		}
 		for _, child := range entries {
-			if err := RemoveAll(fsys, fsys.Join(path, child.Name)); err != nil {
+			if err := RemoveAllFunc(fsys, fsys.Join(path, child.Name), removed); err != nil {
 				return err
 			}
 		}
 	}
-	return fsys.Remove(path)
+	if err := fsys.Remove(path); err != nil {
+		return err
+	}
+	if removed != nil {
+		removed(path)
+	}
+	return nil
 }
 
 // ReadHead reads up to n bytes from the start of a file, reporting whether
